@@ -13,10 +13,11 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
 
-      - name: Grant Execute Permission to Gradle
-        run: chmod +x gradlew
+      - name: Setup Gradle Environment
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.2
 
       - name: Build Release APK
         run: gradle assembleRelease

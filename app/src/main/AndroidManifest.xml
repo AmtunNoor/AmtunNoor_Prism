@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.noor.prism">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -9,13 +8,13 @@
         android:allowBackup="true"
         android:icon="@drawable/app_icon"
         android:banner="@drawable/tv_banner"
-        android:label="Noor Prism TV"
+        android:label="Noor\'s Prism"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.NoActionBar"
         android:usesCleartextTraffic="true">
         
         <activity
-            android:name=".MainActivity"
+            android:name="com.noor.prism.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -24,7 +23,7 @@
         </activity>
 
         <activity 
-            android:name=".WebViewActivity"
+            android:name="com.noor.prism.WebViewActivity"
             android:exported="false" />
 
     </application>

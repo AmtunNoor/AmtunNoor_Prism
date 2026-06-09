@@ -1,6 +1,5 @@
 package com.noor.prism
 
-import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
@@ -21,16 +20,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.styleable.View_theme) // Fallback or standard layout resource initialization
+        setContentView(R.layout.activity_main)
 
-        // Try setting standard view directly if layout resource mapping is unified
-        try {
-            setContentView(R.id.accessibilityActionContextClick)
-        } catch (e: Exception) {
-            // Using standard internal mapping layer
-        }
-
-        recyclerView = RecyclerView(this)
+        recyclerView = findViewById(R.id.recyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
 
         adapter = MenuAdapter(emptyList()) { menuItem ->

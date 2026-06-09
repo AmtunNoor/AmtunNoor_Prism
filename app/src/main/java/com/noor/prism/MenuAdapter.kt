@@ -1,40 +1,41 @@
 package com.noor.prism
 
-import com.noorprism.app.R
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.card.MaterialCardView
+
+data class MenuItem(val title: String, val url: String)
 
 class MenuAdapter(
-    private val items: List<MenuModel>,
-    private val onItemClick: (MenuModel) -> Unit
+    private var items: List<MenuItem>,
+    private val onItemClick: (MenuItem) -> Unit
 ) : RecyclerView.Adapter<MenuAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val cardView: MaterialCardView = view.findViewById(R.id.cardView)
-        val titleText: TextView = view.findViewById(R.id.tileTitle)
+        val textView: TextView = view.findViewById(R.id.itemText)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_menu_tile, parent, false)
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.menu_item, parent, false)
         return ViewHolder(view)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = items[position]
-        holder.titleText.text = item.title
-        holder.cardView.setOnFocusChangeListener { view, hasFocus ->
-            if (hasFocus) {
-                view.animate().scaleX(1.1f).scaleY(1.1f).setDuration(200).start()
-            } else {
-                view.animate().scaleX(1.0f).scaleY(1.0f).setDuration(200).start()
-            }
+        holder.textView.text = item.title
+
+        holder.itemView.setOnClickListener {
+            onItemClick(item)
         }
-        holder.cardView.setOnClickListener { onItemClick(item) }
     }
 
     override fun getItemCount(): Int = items.size
+
+    fun updateData(newItems: List<MenuItem>) {
+        items = newItems
+        notifyDataSetChanged()
+    }
 }

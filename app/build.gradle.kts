@@ -4,11 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.noorprism.app"
+    // FIXED: Shifted to match your code's exact package directory tree
+    namespace = "com.noor.prism"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.noorprism.app"
+        // FIXED: Shifts the system footprint to align with the manifest package address
+        applicationId = "com.noor.prism"
         minSdk = 21
         targetSdk = 34
         versionCode = 1

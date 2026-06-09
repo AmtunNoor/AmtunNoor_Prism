@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.noorprism.app">
+    package="com.noor.prism">
 
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -15,7 +15,7 @@
         android:usesCleartextTraffic="true">
         
         <activity
-            android:name="com.noor.prism.MainActivity"
+            android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -24,7 +24,7 @@
         </activity>
 
         <activity 
-            android:name="com.noor.prism.WebViewActivity"
+            android:name=".WebViewActivity"
             android:exported="false" />
 
     </application>

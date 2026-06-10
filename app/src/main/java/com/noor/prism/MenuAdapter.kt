@@ -15,12 +15,14 @@ class MenuAdapter(
 ) : RecyclerView.Adapter<MenuAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val textView: TextView = view.findViewById(R.id.itemText)
+        // MATCHED: Now correctly finds tileTitle from your MaterialCardView layout
+        val textView: TextView = view.findViewById(R.id.tileTitle)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        // MATCHED: Now correctly inflates item_menu_tile instead of menu_item
         val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.menu_item, parent, false)
+            .inflate(R.layout.item_menu_tile, parent, false)
         return ViewHolder(view)
     }
 

@@ -5,6 +5,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
+import com.noor.prism.R
 
 data class MenuItem(val title: String, val url: String)
 

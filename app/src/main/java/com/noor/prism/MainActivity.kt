@@ -57,6 +57,8 @@ class MainActivity : AppCompatActivity() {
                     )
                     runOnUiThread {
                         adapter.updateData(menuItems)
+                        // FORCES THE TV REMOTE TO IMMEDIATELY WIRE FOCUS TO YOUR APP LAYOUT
+                        recyclerView.requestFocus()
                     }
                 }
             }

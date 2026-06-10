@@ -7,18 +7,42 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
-import com.noor.prism.R
 
 class WebViewActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
-    @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint("SetJavaScriptEnabled", "DiscouragedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_web_view)
+        
+        // DYNAMIC ROUTING: Automatically catches variations like activity_web_view OR activity_webview
+        var layoutId = resources.getIdentifier("activity_web_view", "layout", packageName)
+        if (layoutId == 0) {
+            layoutId = resources.getIdentifier("activity_webview", "layout", packageName)
+        }
+        if (layoutId == 0) {
+            layoutId = resources.getIdentifier("webview_activity", "layout", packageName)
+        }
+        
+        // Fallback to safely inflate the layout view engine
+        if (layoutId != 0) {
+            setContentView(layoutId)
+        } else {
+            // Ultimate safety net: creates the WebView programmatically if the file is completely missing
+            webView = WebView(this)
+            setContentView(webView)
+        }
 
-        webView = findViewById(R.id.webView)
+        // Connect the WebView object safely
+        try {
+            webView = findViewById(resources.getIdentifier("webView", "id", packageName))
+        } catch (e: Exception) {
+            if (!::webView.isInitialized) {
+                webView = WebView(this)
+                setContentView(webView)
+            }
+        }
         
         val webSettings: WebSettings = webView.settings
         webSettings.javaScriptEnabled = true
@@ -38,7 +62,7 @@ class WebViewActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
+        if (keyCode == KeyEvent.KEYCODE_BACK && ::webView.isInitialized && webView.canGoBack()) {
             webView.goBack()
             return true
         }

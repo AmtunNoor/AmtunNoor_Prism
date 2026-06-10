@@ -7,6 +7,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
+import com.noor.prism.R
 
 class WebViewActivity : AppCompatActivity() {
 

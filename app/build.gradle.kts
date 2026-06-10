@@ -4,19 +4,17 @@ plugins {
 }
 
 android {
-    // FIXED: Shifted to match your code's exact package directory tree
-    namespace = "com.noor.prism"
+    // CRITICAL: This dictates how resources and R layout folders are mapped!
+    namespace = "com.noor.prism" 
     compileSdk = 34
 
     defaultConfig {
-        // FIXED: Shifts the system footprint to align with the manifest package address
+        // CRITICAL: This tells the TV OS exactly who owns this application package!
         applicationId = "com.noor.prism"
         minSdk = 21
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -26,12 +24,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            
-            // Forces Gradle to cryptographically sign the release build
-            // using the system's local developer key footprint (v1/v2 schemas)
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
     
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8

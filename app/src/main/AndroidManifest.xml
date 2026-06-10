@@ -12,7 +12,7 @@
         android:banner="@drawable/tv_banner"
         android:label="Noor\'s Prism"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar"
+        android:theme="@style/Theme.NoorPrism"
         android:usesCleartextTraffic="true">
         
         <activity

@@ -1,6 +1,7 @@
 package com.noor.prism
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
 import android.widget.Toast
@@ -22,15 +23,19 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         recyclerView = findViewById(R.id.recyclerView)
-  //      recyclerView.layoutManager = LinearLayoutManager(this)
-        // Change your old vertical line manager to this clean horizontal row manager:
-recyclerView.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        // Renders your beautiful dashboard cards horizontally across the screen
+        recyclerView.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
 
         adapter = MenuAdapter(emptyList()) { menuModel ->
-            val intent = Intent(this, WebViewActivity::class.java).apply {
-                putExtra("URL", menuModel.url)
+            try {
+                // BYPASSES BUGGY WEBVIEW SANDBOX: Launches the link directly into the working browser
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(menuModel.url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                Toast.makeText(this, "No browser found to open link", Toast.LENGTH_SHORT).show()
             }
-            startActivity(intent)
         }
         recyclerView.adapter = adapter
 
@@ -39,7 +44,6 @@ recyclerView.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZ
 
     private fun loadLocalMenuData() {
         try {
-            // Reads the menu.json file directly from your local app assets folder
             val jsonString = assets.open("menu.json").use { inputStream ->
                 val size = inputStream.available()
                 val buffer = ByteArray(size)

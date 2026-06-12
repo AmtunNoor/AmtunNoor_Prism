@@ -14,17 +14,15 @@ class WebViewActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Initialize a clean full-screen hardware-accelerated WebView instance directly
-        webView = WebView(this).apply {
-            layoutParams = android.view.ViewGroup.LayoutParams(
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        setContentView(webView)
+        // FIXED: Inflates the physical XML resource layout file to inherit system network permissions
+        setContentView(R.layout.activity_web_view)
+        
+        // FIXED: Explicitly binds the view instance by its resource layout ID identifier
+        webView = findViewById(R.id.tvWebView)
 
-        // TV-OPTIMIZED WEBVIEW SETTINGS
+        // FORCE RENDER WEB COMPLIANCE SETTINGS
         webView.webViewClient = object : WebViewClient() {
+            @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                 url?.let { view?.loadUrl(it) }
                 return true
@@ -32,22 +30,22 @@ class WebViewActivity : AppCompatActivity() {
         }
 
         val webSettings = webView.settings
-        webSettings.javaScriptEnabled = true // Essential for modern responsive streaming interfaces
-        webSettings.domStorageEnabled = true // Allows the page to cache login or data states locally
+        webSettings.javaScriptEnabled = true
+        webSettings.domStorageEnabled = true
         webSettings.loadWithOverviewMode = true
         webSettings.useWideViewPort = true
-        webSettings.mediaPlaybackRequiresUserGesture = false // Allows media audio to play seamlessly via remote control
+        webSettings.databaseEnabled = true
+        webSettings.mediaPlaybackRequiresUserGesture = false
 
-        // Fetch the URL sent from MainActivity click handlers
+        // Fetch URL route bundle variables passed forward out of MainActivity click streams
         val url = intent.getStringExtra("URL")
         if (!url.isNullOrEmpty()) {
             webView.loadUrl(url)
         } else {
-            finish() // Safely fall back if the URL structure is broken
+            finish()
         }
     }
 
-    // CRITICAL FOR TV REMOTES: Allows the back button to navigate pages instead of exiting the entire app
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
             webView.goBack()

@@ -9,14 +9,13 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import okhttp3.*
 import java.io.IOException
+import java.nio.charset.Charset
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: MenuAdapter
-    private val client = OkHttpClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,41 +32,31 @@ class MainActivity : AppCompatActivity() {
         }
         recyclerView.adapter = adapter
 
-        fetchMenuData()
+        loadLocalMenuData()
     }
 
-    private fun fetchMenuData() {
-        val request = Request.Builder()
-            .url("https://raw.githubusercontent.com/AmtunNoor/AmtunNoor_Prism/main/menu.json")
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Failed to load menu", Toast.LENGTH_SHORT).show()
-                }
+    private fun loadLocalMenuData() {
+        try {
+            // Reads the menu.json file directly from your local app assets folder
+            val jsonString = assets.open("menu.json").use { inputStream ->
+                val size = inputStream.available()
+                val buffer = ByteArray(size)
+                inputStream.read(buffer)
+                String(buffer, Charset.forName("UTF-8"))
             }
 
-            override fun onResponse(call: Call, response: Response) {
-                response.body?.string()?.let { jsonString ->
-                    try {
-                        // FIXED: Changed layout type mapping to match MenuModel class exactly
-                        val menuItems: List<MenuModel> = Gson().fromJson(
-                            jsonString,
-                            object : TypeToken<List<MenuModel>>() {}.type
-                        )
-                        runOnUiThread {
-                            adapter.updateData(menuItems)
-                            recyclerView.requestFocus()
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "JSON Parsing Error", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            }
-        })
+            val menuItems: List<MenuModel> = Gson().fromJson(
+                jsonString,
+                object : TypeToken<List<MenuModel>>() {}.type
+            )
+
+            adapter.updateData(menuItems)
+            recyclerView.requestFocus()
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Failed to parse local menu: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

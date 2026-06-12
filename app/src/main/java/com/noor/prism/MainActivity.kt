@@ -22,7 +22,9 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         recyclerView = findViewById(R.id.recyclerView)
-        recyclerView.layoutManager = LinearLayoutManager(this)
+  //      recyclerView.layoutManager = LinearLayoutManager(this)
+        // Change your old vertical line manager to this clean horizontal row manager:
+recyclerView.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
 
         adapter = MenuAdapter(emptyList()) { menuModel ->
             val intent = Intent(this, WebViewActivity::class.java).apply {

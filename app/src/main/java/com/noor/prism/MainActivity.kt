@@ -9,7 +9,6 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import com.noor.prism.R
 import okhttp3.*
 import java.io.IOException
 
@@ -26,9 +25,9 @@ class MainActivity : AppCompatActivity() {
         recyclerView = findViewById(R.id.recyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        adapter = MenuAdapter(emptyList()) { menuItem ->
+        adapter = MenuAdapter(emptyList()) { menuModel ->
             val intent = Intent(this, WebViewActivity::class.java).apply {
-                putExtra("URL", menuItem.url)
+                putExtra("URL", menuModel.url)
             }
             startActivity(intent)
         }
@@ -39,7 +38,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun fetchMenuData() {
         val request = Request.Builder()
-            .url("https://raw.githubusercontent.com/AmtunNoor/NoorPrism/main/menu.json")
+            .url("https://raw.githubusercontent.com/AmtunNoor/AmtunNoor_Prism/main/menu.json")
             .build()
 
         client.newCall(request).enqueue(object : Callback {
@@ -51,14 +50,20 @@ class MainActivity : AppCompatActivity() {
 
             override fun onResponse(call: Call, response: Response) {
                 response.body?.string()?.let { jsonString ->
-                    val menuItems: List<MenuItem> = Gson().fromJson(
-                        jsonString,
-                        object : TypeToken<List<MenuItem>>() {}.type
-                    )
-                    runOnUiThread {
-                        adapter.updateData(menuItems)
-                        // FORCES THE TV REMOTE TO IMMEDIATELY WIRE FOCUS TO YOUR APP LAYOUT
-                        recyclerView.requestFocus()
+                    try {
+                        // FIXED: Changed layout type mapping to match MenuModel class exactly
+                        val menuItems: List<MenuModel> = Gson().fromJson(
+                            jsonString,
+                            object : TypeToken<List<MenuModel>>() {}.type
+                        )
+                        runOnUiThread {
+                            adapter.updateData(menuItems)
+                            recyclerView.requestFocus()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "JSON Parsing Error", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }

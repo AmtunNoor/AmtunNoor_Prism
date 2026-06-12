@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.NoorPrism" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowBackground">#121212</item>
+        <item name="android:windowBackground">#1E1E2E</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowFullscreen">true</item>
+        <item name="colorPrimary">#89B4FA</item>
+        <item name="colorAccent">#F5C2E7</item>
     </style>
 </resources>

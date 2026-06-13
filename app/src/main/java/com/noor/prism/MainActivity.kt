@@ -80,7 +80,7 @@ class MainActivity : AppCompatActivity() {
         val targetFile = File(filesDir, relativePath)
         if (targetFile.exists()) return // Skip downloading if already cached on TV storage
 
-        // CRITICAL FOR SUBFOLDERS: This builds /quran/ and /salah/ folders automatically
+        // Builds /quran/ and /salah/ folders automatically
         targetFile.parentFile?.mkdirs()
         
         val request = Request.Builder().url(url).build()
@@ -98,7 +98,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun displayMenu(items: List<MenuModel>) {
         adapter.updateData(items)
-        val alphaIn = AnimationUtils.loadAnimation(this, android.network.anim?.fade_in ?: android.R.anim.fade_in).apply { duration = 700 }
+        // Fixed clean layout animation hook:
+        val alphaIn = AnimationUtils.loadAnimation(this, android.R.anim.fade_in).apply { duration = 700 }
         recyclerView.layoutAnimation = LayoutAnimationController(alphaIn, 0.25f)
         recyclerView.startLayoutAnimation()
         recyclerView.requestFocus()
@@ -106,7 +107,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadOfflineFallback() {
         Toast.makeText(this, "Running completely offline", Toast.LENGTH_SHORT).show()
-        // MATCHING PATHS: Emergency fallback matches your subfolder structures perfectly
         val fallbackList = listOf(
             MenuModel("Quran", "file:///data/user/0/com.noor.prism/files/quran/index.html?id=A1"),
             MenuModel("Salah", "file:///data/user/0/com.noor.prism/files/salah/SalahStepsIndex.html")

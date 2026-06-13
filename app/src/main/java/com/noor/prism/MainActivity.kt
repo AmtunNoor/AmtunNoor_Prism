@@ -1,9 +1,9 @@
 package com.noor.prism
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -17,25 +17,23 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: MenuAdapter
+    private lateinit var mainRootContainer: FrameLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        mainRootContainer = findViewById(R.id.mainRootContainer)
         recyclerView = findViewById(R.id.recyclerView)
-        // Renders your beautiful dashboard cards horizontally across the screen
+        
+        // Renders dashboard tiles horizontally side-by-side across the screen
         recyclerView.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
 
         adapter = MenuAdapter(emptyList()) { menuModel ->
-            try {
-                // BYPASSES BUGGY WEBVIEW SANDBOX: Launches the link directly into the working browser
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(menuModel.url)).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                Toast.makeText(this, "No browser found to open link", Toast.LENGTH_SHORT).show()
+            val intent = Intent(this, WebViewActivity::class.java).apply {
+                putExtra("URL", menuModel.url)
             }
+            startActivity(intent)
         }
         recyclerView.adapter = adapter
 
@@ -56,8 +54,20 @@ class MainActivity : AppCompatActivity() {
                 object : TypeToken<List<MenuModel>>() {}.type
             )
 
+            // Update data and trigger visual entry loading animation for the kids
             adapter.updateData(menuItems)
-            recyclerView.requestFocus()
+            
+            // Playful UI Entry Animation: Dashboard cards slide up gracefully over the rainbow background
+            recyclerView.alpha = 0f
+            recyclerView.translationY = 50f
+            recyclerView.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(800)
+                .withEndAction {
+                    recyclerView.requestFocus() // Safe focus request after layout animation finishes
+                }
+                .start()
 
         } catch (e: Exception) {
             e.printStackTrace()

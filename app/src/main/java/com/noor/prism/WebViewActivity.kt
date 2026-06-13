@@ -38,6 +38,11 @@ class WebViewActivity : AppCompatActivity() {
         webSettings.allowFileAccess = true
         webSettings.loadsImagesAutomatically = true
         
+        // CRITICAL BYPASS FLAGS: Allows local HTML files to run relative scripts and play local audio files
+        webSettings.allowContentAccess = true
+        webSettings.allowFileAccessFromFileURLs = true
+        webSettings.allowUniversalAccessFromFileURLs = true
+        
         // Essential TV media extensions for smooth scaling and performance
         webSettings.databaseEnabled = true
         webSettings.loadWithOverviewMode = true

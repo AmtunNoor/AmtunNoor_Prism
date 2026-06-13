@@ -40,15 +40,25 @@ class MenuAdapter(
         // TV MOTION ANIMATION BLOCK
         holder.cardContainer.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
-                // Glow & Scale Effect for Kids
+                // Glow & Scale Effect: Card pops forward and turns into a beautiful pastel sky blue
                 holder.cardContainer.setCardBackgroundColor(android.graphics.Color.parseColor("#89B4FA"))
                 holder.titleTextView.setTextColor(android.graphics.Color.parseColor("#11111B"))
-                holder.cardContainer.animate().scaleX(1.12f).scaleY(1.12f).translationZ(16f).setDuration(200).start()
+                holder.cardContainer.animate()
+                    .scaleX(1.15f)
+                    .scaleY(1.15f)
+                    .translationZ(20f)
+                    .setDuration(200)
+                    .start()
             } else {
-                // Return to clean rest state
-                holder.cardContainer.setCardBackgroundColor(android.graphics.Color.parseColor("#2C2C3E"))
+                // Rest State: Turns into a slightly transparent dark card that blends with the garden landscape
+                holder.cardContainer.setCardBackgroundColor(android.graphics.Color.parseColor("#B32C2C3E"))
                 holder.titleTextView.setTextColor(android.graphics.Color.WHITE)
-                holder.cardContainer.animate().scaleX(1.0f).scaleY(1.0f).translationZ(0f).setDuration(200).start()
+                holder.cardContainer.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .translationZ(0f)
+                    .setDuration(200)
+                    .start()
             }
         }
     }

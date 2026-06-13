@@ -1,10 +1,32 @@
 [
   {
     "title": "Quran",
-    "url": "https://amtunnoor.github.io/Quran/?id=A1"
+    "mainUrl": "file:///data/user/0/com.noor.prism/files/quran/index.html?id=A1",
+    "syncFiles": [
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/index.html", "path": "quran/index.html" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A10.mp3", "path": "quran/A10.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A11.mp3", "path": "quran/A11.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A12.mp3", "path": "quran/A12.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A13.mp3", "path": "quran/A13.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A14.mp3", "path": "quran/A14.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A15.mp3", "path": "quran/A15.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A16.mp3", "path": "quran/A16.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A17.mp3", "path": "quran/A17.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A18.mp3", "path": "quran/A18.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A19.mp3", "path": "quran/A19.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A20.mp3", "path": "quran/A20.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A5.mp3", "path": "quran/A5.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A6.mp3", "path": "quran/A6.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A7.mp3", "path": "quran/A7.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A8.mp3", "path": "quran/A8.mp3" },
+      { "url": "https://raw.githubusercontent.com/AmtunNoor/Quran/main/A9.mp3", "path": "quran/A9.mp3" }
+    ]
   },
   {
     "title": "Salah",
-    "url": "https://busymommh.github.io/SalahSteps/SalahStepsIndex.html"
+    "mainUrl": "file:///data/user/0/com.noor.prism/files/salah_index.html",
+    "syncFiles": [
+      { "url": "https://raw.githubusercontent.com/busymommh/SalahSteps/main/SalahStepsIndex.html", "path": "salah_index.html" }
+    ]
   }
 ]

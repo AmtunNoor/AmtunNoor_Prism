@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
                             object : TypeToken<List<RemoteMenuBlueprint>>(){}.type
                         )
 
-                        // Bulk download every single page and audio file to the local disk safely
+                        // Bulk download pages and audio into their specific subfolders
                         for (blueprint in remoteData) {
                             blueprint.syncFiles?.forEach { fileInfo ->
                                 downloadFile(fileInfo.url, fileInfo.path)
@@ -65,7 +65,6 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         runOnUiThread {
-                            // Map to internal paths for our WebView to consume safely offline
                             val dashboardItems = remoteData.map { MenuModel(it.title, it.mainUrl) }
                             displayMenu(dashboardItems)
                         }
@@ -79,11 +78,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun downloadFile(url: String, relativePath: String) {
         val targetFile = File(filesDir, relativePath)
-        if (targetFile.exists()) return // Skip downloading if the file is already safely cached
+        if (targetFile.exists()) return // Skip downloading if already cached on TV storage
 
+        // CRITICAL FOR SUBFOLDERS: This builds /quran/ and /salah/ folders automatically
         targetFile.parentFile?.mkdirs()
-        val request = Request.Builder().url(url).build()
         
+        val request = Request.Builder().url(url).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {}
             override fun onResponse(call: Call, response: Response) {
@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun displayMenu(items: List<MenuModel>) {
         adapter.updateData(items)
-        val alphaIn = AnimationUtils.loadAnimation(this, android.R.anim.fade_in).apply { duration = 700 }
+        val alphaIn = AnimationUtils.loadAnimation(this, android.network.anim?.fade_in ?: android.R.anim.fade_in).apply { duration = 700 }
         recyclerView.layoutAnimation = LayoutAnimationController(alphaIn, 0.25f)
         recyclerView.startLayoutAnimation()
         recyclerView.requestFocus()
@@ -106,9 +106,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadOfflineFallback() {
         Toast.makeText(this, "Running completely offline", Toast.LENGTH_SHORT).show()
+        // MATCHING PATHS: Emergency fallback matches your subfolder structures perfectly
         val fallbackList = listOf(
             MenuModel("Quran", "file:///data/user/0/com.noor.prism/files/quran/index.html?id=A1"),
-            MenuModel("Salah", "file:///data/user/0/com.noor.prism/files/salah_index.html")
+            MenuModel("Salah", "file:///data/user/0/com.noor.prism/files/salah/SalahStepsIndex.html")
         )
         displayMenu(fallbackList)
     }

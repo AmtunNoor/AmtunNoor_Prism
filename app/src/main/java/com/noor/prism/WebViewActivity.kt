@@ -14,13 +14,15 @@ class WebViewActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // FIXED: Inflates the physical XML resource layout file to inherit system network permissions
-        setContentView(R.layout.activity_web_view)
-        
-        // FIXED: Explicitly binds the view instance by its resource layout ID identifier
-        webView = findViewById(R.id.tvWebView)
+        // Setup a native, full-screen hardware-accelerated WebView container
+        webView = WebView(this).apply {
+            layoutParams = android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        setContentView(webView)
 
-        // FORCE RENDER WEB COMPLIANCE SETTINGS
         webView.webViewClient = object : WebViewClient() {
             @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
@@ -30,14 +32,18 @@ class WebViewActivity : AppCompatActivity() {
         }
 
         val webSettings = webView.settings
+        // YOUR EXACT REQUESTED SETTINGS:
         webSettings.javaScriptEnabled = true
         webSettings.domStorageEnabled = true
+        webSettings.allowFileAccess = true
+        webSettings.loadsImagesAutomatically = true
+        
+        // Essential TV media extensions for smooth scaling and performance
+        webSettings.databaseEnabled = true
         webSettings.loadWithOverviewMode = true
         webSettings.useWideViewPort = true
-        webSettings.databaseEnabled = true
         webSettings.mediaPlaybackRequiresUserGesture = false
 
-        // Fetch URL route bundle variables passed forward out of MainActivity click streams
         val url = intent.getStringExtra("URL")
         if (!url.isNullOrEmpty()) {
             webView.loadUrl(url)
@@ -46,6 +52,7 @@ class WebViewActivity : AppCompatActivity() {
         }
     }
 
+    // Handles TV Remote Back clicks smoothly so kids can navigate backwards on a webpage
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
             webView.goBack()

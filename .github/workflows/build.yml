@@ -5,8 +5,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Android App
         uses: actions/checkout@v4
+
+      - name: Checkout latest Quran web app
+        uses: actions/checkout@v4
+        with:
+          repository: AmtunNoor/Quran
+          ref: main
+          path: quran-web
+
+      - name: Bundle Quran web app into Android assets
+        run: |
+          rm -rf app/src/main/assets/prism
+          mkdir -p app/src/main/assets/prism
+          rsync -av \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='README.md' \
+            quran-web/ app/src/main/assets/prism/
 
       - name: Set up Java Development Kit
         uses: actions/setup-java@v4

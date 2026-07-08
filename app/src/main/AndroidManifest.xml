@@ -23,7 +23,7 @@
             android:name="com.noor.prism.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape">
+            android:screenOrientation="fullSensor">
             
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

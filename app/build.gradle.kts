@@ -15,6 +15,10 @@ android {
         versionName = "1.3"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

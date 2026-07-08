@@ -22,17 +22,20 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private val handler = Handler(Looper.getMainLooper())
-    private val prismBaseUrl = "https://amtunnoor.github.io/Quran/index.html"
+    private val remoteZipUrl = "https://github.com/AmtunNoor/Quran/archive/refs/heads/main.zip"
 
-    private fun prismLaunchUrl(): String {
-        // Fresh shell every launch. Assets/audio remain cacheable through normal WebView + service worker caching.
-        return "$prismBaseUrl?app=prism&apk=${BuildConfig.VERSION_CODE}&shell=${System.currentTimeMillis()}"
-    }
+    private val prefs by lazy { getSharedPreferences("prism_app_state", MODE_PRIVATE) }
+    private val bundleDir by lazy { File(filesDir, "prism_bundle_v${BuildConfig.VERSION_CODE}") }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,10 +51,16 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
-        clearWebViewCacheOncePerApkVersion()
         configureWebView()
-        if (savedInstanceState == null) webView.loadUrl(prismLaunchUrl())
-        else webView.restoreState(savedInstanceState)
+        ensureBundledSnapshotReady()
+        pruneOldSnapshotsSafely()
+
+        if (savedInstanceState == null) {
+            webView.loadUrl(activeLocalIndexUrl())
+            updateRemoteSnapshotInBackground()
+        } else {
+            webView.restoreState(savedInstanceState)
+        }
     }
 
     private fun setImmersiveFlags() {
@@ -65,16 +74,38 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun clearWebViewCacheOncePerApkVersion() {
-        val prefs = getSharedPreferences("prism_app_state", MODE_PRIVATE)
-        val lastCacheVersion = prefs.getInt("last_cache_version", -1)
-        if (lastCacheVersion != BuildConfig.VERSION_CODE) {
-            try {
-                webView.stopLoading()
-                webView.clearCache(true)
-                webView.clearHistory()
-            } catch (_: Throwable) {}
-            prefs.edit().putInt("last_cache_version", BuildConfig.VERSION_CODE).apply()
+    private fun activeLocalIndexUrl(): String {
+        val activePath = prefs.getString("active_snapshot_path", null)
+        val active = activePath?.let { File(it) }?.takeIf { File(it, "index.html").exists() }
+            ?: bundleDir
+        return File(active, "index.html").toURI().toString() + "?app=prism&local=1&apk=${BuildConfig.VERSION_CODE}"
+    }
+
+    private fun ensureBundledSnapshotReady() {
+        val marker = File(bundleDir, ".bundle_ready")
+        if (marker.exists() && File(bundleDir, "index.html").exists()) return
+        try {
+            if (bundleDir.exists()) bundleDir.deleteRecursively()
+            bundleDir.mkdirs()
+            copyAssetFolder("prism", bundleDir)
+            marker.writeText("ready:${BuildConfig.VERSION_CODE}")
+        } catch (_: Throwable) {
+            // If copy fails, WebView will still attempt whatever exists.
+        }
+    }
+
+    private fun copyAssetFolder(assetPath: String, dest: File) {
+        val children = assets.list(assetPath) ?: emptyArray()
+        if (children.isEmpty()) {
+            dest.parentFile?.mkdirs()
+            assets.open(assetPath).use { input ->
+                FileOutputStream(dest).use { output -> input.copyTo(output) }
+            }
+            return
+        }
+        dest.mkdirs()
+        children.forEach { child ->
+            copyAssetFolder("$assetPath/$child", File(dest, child))
         }
     }
 
@@ -89,13 +120,15 @@ class MainActivity : AppCompatActivity() {
         s.blockNetworkImage = false
         s.allowFileAccess = true
         s.allowContentAccess = true
+        s.allowFileAccessFromFileURLs = true
+        s.allowUniversalAccessFromFileURLs = true
         s.javaScriptCanOpenWindowsAutomatically = false
         s.setSupportZoom(false)
         s.builtInZoomControls = false
         s.displayZoomControls = false
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
-        s.cacheMode = if (isOnline()) WebSettings.LOAD_DEFAULT else WebSettings.LOAD_CACHE_ELSE_NETWORK
+        s.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             s.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
@@ -108,16 +141,14 @@ class MainActivity : AppCompatActivity() {
                 sw.allowContentAccess = true
                 sw.allowFileAccess = true
                 sw.blockNetworkLoads = false
-                sw.cacheMode = WebSettings.LOAD_DEFAULT
+                sw.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
             } catch (_: Throwable) {}
         }
 
         WebView.setWebContentsDebuggingEnabled(false)
 
         webView.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                return true
-            }
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -131,20 +162,14 @@ class MainActivity : AppCompatActivity() {
                 runAppShellSelfHealChecks()
             }
 
-            override fun onReceivedError(
-                view: WebView,
-                request: WebResourceRequest,
-                error: WebResourceError
-            ) {
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 super.onReceivedError(view, request, error)
-                // Keep last cached page visible where possible. No native dashboard fallback.
             }
         }
     }
 
     private fun runAppShellSelfHealChecks() {
-        val delays = longArrayOf(250, 800, 1600, 3000, 5000, 8000)
-        delays.forEach { delay ->
+        longArrayOf(250, 800, 1600, 3000, 5000, 8000).forEach { delay ->
             handler.postDelayed({ injectPrismAppShellFixes(webView) }, delay)
         }
     }
@@ -152,38 +177,25 @@ class MainActivity : AppCompatActivity() {
     private fun injectPrismAppShellFixes(view: WebView) {
         val js = """
             (function(){
-              function anyAudioPlaying(){
-                try{
-                  return Array.prototype.some.call(document.querySelectorAll('audio'), function(a){
-                    return a && !a.paused && !a.ended && a.currentTime > 0;
-                  });
-                }catch(e){ return false; }
-              }
-
               function shouldForceTopbar(){
                 try{
                   var body = document.body;
                   if(!body) return false;
                   var cls = body.classList;
                   if(cls.contains('landing-mode')) return false;
-                  // These visual-only/floating-control modules intentionally do not need the full fixed menu.
                   if(cls.contains('plugin-letters') || cls.contains('plugin-angels') || cls.contains('plugin-pillars') || cls.contains('plugin-months') || cls.contains('plugin-numbers')) return false;
                   var topbar = document.getElementById('topbar') || document.querySelector('.topbar');
                   return !!topbar;
                 }catch(e){ return false; }
               }
-
               function forceTopbarVisible(){
                 try{
                   var topbar = document.getElementById('topbar') || document.querySelector('.topbar');
                   if(!topbar || !shouldForceTopbar()) return false;
-
                   if(window.__prismHealTopbar){ try{ window.__prismHealTopbar(); }catch(e){} }
-
                   var style = window.getComputedStyle(topbar);
                   var rect = topbar.getBoundingClientRect();
                   var hidden = style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.height < 8;
-
                   if(hidden){
                     topbar.style.setProperty('display','flex','important');
                     topbar.style.setProperty('visibility','visible','important');
@@ -195,32 +207,94 @@ class MainActivity : AppCompatActivity() {
                   return true;
                 }catch(e){ return false; }
               }
-
-              document.documentElement.classList.add('prism-android-app');
-              if(document.body) document.body.classList.add('prism-android-app');
-
-              // Update service worker in the background, but never interrupt currently playing audio/effects.
-              if(navigator.serviceWorker){
-                navigator.serviceWorker.getRegistrations().then(function(regs){
-                  regs.forEach(function(r){ try{ r.update(); }catch(e){} });
-                }).catch(function(){});
-              }
-
+              document.documentElement.classList.add('prism-android-app','prism-local-first-app');
+              if(document.body) document.body.classList.add('prism-android-app','prism-local-first-app');
               forceTopbarVisible();
-
               if(!window.__prismAndroidTopbarWatchdog){
-                window.__prismAndroidTopbarWatchdog = setInterval(function(){
-                  // JS self-heal only. Do NOT reload while audio is playing.
-                  forceTopbarVisible();
-                  anyAudioPlaying();
-                }, 1500);
-                setTimeout(function(){
-                  try{ clearInterval(window.__prismAndroidTopbarWatchdog); window.__prismAndroidTopbarWatchdog = null; }catch(e){}
-                }, 15000);
+                window.__prismAndroidTopbarWatchdog = setInterval(forceTopbarVisible, 1500);
+                setTimeout(function(){ try{ clearInterval(window.__prismAndroidTopbarWatchdog); window.__prismAndroidTopbarWatchdog = null; }catch(e){} }, 15000);
               }
             })();
         """.trimIndent()
         view.evaluateJavascript(js, null)
+    }
+
+    private fun updateRemoteSnapshotInBackground() {
+        if (!isOnline()) return
+        Thread {
+            try {
+                val newDir = File(filesDir, "prism_remote_${System.currentTimeMillis()}")
+                val tmpZip = File(cacheDir, "quran-main.zip")
+                downloadToFile(remoteZipUrl, tmpZip)
+                val tmpExtract = File(cacheDir, "prism_extract_${System.currentTimeMillis()}")
+                if (tmpExtract.exists()) tmpExtract.deleteRecursively()
+                tmpExtract.mkdirs()
+                unzip(tmpZip, tmpExtract)
+                val root = tmpExtract.listFiles()?.firstOrNull { it.isDirectory && File(it, "index.html").exists() }
+                    ?: tmpExtract.takeIf { File(it, "index.html").exists() }
+                    ?: return@Thread
+                if (newDir.exists()) newDir.deleteRecursively()
+                copyDirectory(root, newDir)
+                if (File(newDir, "index.html").exists()) {
+                    prefs.edit().putString("active_snapshot_path", newDir.absolutePath).apply()
+                } else {
+                    newDir.deleteRecursively()
+                }
+                tmpExtract.deleteRecursively()
+                tmpZip.delete()
+            } catch (_: Throwable) {}
+        }.start()
+    }
+
+    private fun downloadToFile(urlText: String, out: File) {
+        val connection = (URL(urlText).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15000
+            readTimeout = 45000
+            instanceFollowRedirects = true
+        }
+        connection.inputStream.use { input ->
+            FileOutputStream(out).use { output -> input.copyTo(output) }
+        }
+        connection.disconnect()
+    }
+
+    private fun unzip(zip: File, dest: File) {
+        ZipInputStream(zip.inputStream().buffered()).use { zis ->
+            while (true) {
+                val entry = zis.nextEntry ?: break
+                val outFile = File(dest, entry.name)
+                val canonicalDest = dest.canonicalPath + File.separator
+                val canonicalOut = outFile.canonicalPath
+                if (!canonicalOut.startsWith(canonicalDest)) continue
+                if (entry.isDirectory) {
+                    outFile.mkdirs()
+                } else {
+                    outFile.parentFile?.mkdirs()
+                    FileOutputStream(outFile).use { output -> zis.copyTo(output) }
+                }
+                zis.closeEntry()
+            }
+        }
+    }
+
+    private fun copyDirectory(src: File, dest: File) {
+        if (src.isDirectory) {
+            dest.mkdirs()
+            src.listFiles()?.forEach { child -> copyDirectory(child, File(dest, child.name)) }
+        } else {
+            dest.parentFile?.mkdirs()
+            src.inputStream().use { input -> FileOutputStream(dest).use { output -> input.copyTo(output) } }
+        }
+    }
+
+    private fun pruneOldSnapshotsSafely() {
+        try {
+            val active = prefs.getString("active_snapshot_path", null)
+            filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("prism_remote_") && it.absolutePath != active }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(2)
+                ?.forEach { it.deleteRecursively() }
+        } catch (_: Throwable) {}
     }
 
     private fun isOnline(): Boolean {
@@ -229,41 +303,29 @@ class MainActivity : AppCompatActivity() {
             val network = cm.activeNetwork ?: return false
             val caps = cm.getNetworkCapabilities(network) ?: return false
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (_: Throwable) { true }
+        } catch (_: Throwable) { false }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        webView.saveState(outState)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        setImmersiveFlags()
-        webView.onResume()
-        runAppShellSelfHealChecks()
-    }
-
-    override fun onPause() {
-        webView.onPause()
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        try { webView.destroy() } catch (_: Throwable) {}
-        super.onDestroy()
+        try { webView.saveState(outState) } catch (_: Throwable) {}
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (webView.canGoBack()) {
+            return if (webView.canGoBack()) {
                 webView.goBack()
+                true
             } else {
                 moveTaskToBack(true)
+                true
             }
-            return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) setImmersiveFlags()
     }
 }

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+<title>Mini Quran QR Generator</title>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+<style>
+
+body{
+margin:0;
+padding:10px;
+font-family:Arial,sans-serif;
+background:white;
+}
+
+.grid{
+display:grid;
+grid-template-columns:repeat(4,1fr);
+gap:8px;
+max-width:800px;
+margin:auto;
+}
+
+.card{
+display:flex;
+flex-direction:column;
+align-items:center;
+justify-content:center;
+
+border:1px solid #ddd;
+border-radius:10px;
+
+padding:6px;
+
+break-inside:avoid;
+page-break-inside:avoid;
+}
+
+.name{
+font-size:10px;
+font-weight:bold;
+text-align:center;
+margin-bottom:4px;
+min-height:24px;
+}
+
+canvas{
+width:75px !important;
+height:75px !important;
+display:block;
+}
+
+@media print{
+
+body{
+padding:0;
+}
+
+.grid{
+gap:4px;
+}
+
+.card{
+border:1px solid #ccc;
+padding:4px;
+}
+
+canvas{
+width:70px !important;
+height:70px !important;
+}
+
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="grid" id="grid"></div>
+
+<script>
+
+/* =========================
+NEW REPOSITORY URL
+========================= */
+
+const BASE =
+"https://amtunnoor.github.io/Quran/";
+
+/* =========================
+SURAH LIST
+========================= */
+
+const surahs = [
+
+["A1","Al Fatiha"],
+["A2","Al Ikhlas"],
+["A3","Al Falaq"],
+["A4","An Naas"],
+
+["A5","Al Feel"],
+["A6","Quraish"],
+["A7","Al Ma'un"],
+["A8","Al Kawther"],
+
+["A9","Al Kafiroon"],
+["A10","An Nasr"],
+["A11","Al Masad"],
+["A12","Takbir"],
+
+["A13","Azan"],
+["A14","Second Kalima"],
+["A15","Ad Duha"],
+["A16","Innal Muslimeena"]
+
+];
+
+const grid =
+document.getElementById("grid");
+
+/* =========================
+GENERATE QR
+========================= */
+
+surahs.forEach(item=>{
+
+const id = item[0];
+const name = item[1];
+
+const url =
+`${BASE}?id=${id}`;
+
+const card =
+document.createElement("div");
+
+card.className = "card";
+
+card.innerHTML = `
+
+<div class="name">
+${name}
+</div>
+
+<canvas id="${id}"></canvas>
+
+`;
+
+grid.appendChild(card);
+
+QRCode.toCanvas(
+document.getElementById(id),
+url,
+{
+width:140,
+margin:0,
+errorCorrectionLevel:"M"
+}
+);
+
+});
+
+</script>
+
+</body>
+</html>

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -13,10 +14,12 @@ import android.view.View
 import android.view.Window
 import android.view.WindowManager
 import android.webkit.ConsoleMessage
+import android.webkit.MimeTypeMap
 import android.webkit.ServiceWorkerController
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -26,13 +29,17 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private val handler = Handler(Looper.getMainLooper())
+
+    private val remoteBaseUrl = "https://amtunnoor.github.io/Quran/"
     private val remoteZipUrl = "https://github.com/AmtunNoor/Quran/archive/refs/heads/main.zip"
+    private val updateCheckIntervalMs = 12L * 60L * 60L * 1000L
 
     private val prefs by lazy { getSharedPreferences("prism_app_state", MODE_PRIVATE) }
     private val bundleDir by lazy { File(filesDir, "prism_bundle_v${BuildConfig.VERSION_CODE}") }
@@ -57,7 +64,7 @@ class MainActivity : AppCompatActivity() {
 
         if (savedInstanceState == null) {
             webView.loadUrl(activeLocalIndexUrl())
-            updateRemoteSnapshotInBackground()
+            updateRemoteSnapshotInBackgroundIfDue()
         } else {
             webView.restoreState(savedInstanceState)
         }
@@ -74,11 +81,13 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun activeLocalIndexUrl(): String {
+    private fun activeSnapshotDir(): File {
         val activePath = prefs.getString("active_snapshot_path", null)
-        val active = activePath?.let { File(it) }?.takeIf { File(it, "index.html").exists() }
-            ?: bundleDir
-        return File(active, "index.html").toURI().toString() + "?app=prism&local=1&apk=${BuildConfig.VERSION_CODE}"
+        return activePath?.let { File(it) }?.takeIf { File(it, "index.html").exists() } ?: bundleDir
+    }
+
+    private fun activeLocalIndexUrl(): String {
+        return File(activeSnapshotDir(), "index.html").toURI().toString() + "?app=prism&local=1&apk=${BuildConfig.VERSION_CODE}"
     }
 
     private fun ensureBundledSnapshotReady() {
@@ -157,6 +166,10 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
 
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                return interceptMissingLocalAsset(request) ?: super.shouldInterceptRequest(view, request)
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 runAppShellSelfHealChecks()
@@ -165,6 +178,74 @@ class MainActivity : AppCompatActivity() {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 super.onReceivedError(view, request, error)
             }
+        }
+    }
+
+    /**
+     * Keeps APK small: heavy MP3/APK files are not bundled.
+     * If local HTML asks for a missing local asset, stream it from GitHub Pages.
+     */
+    private fun interceptMissingLocalAsset(request: WebResourceRequest): WebResourceResponse? {
+        if (!isOnline()) return null
+        val uri = request.url ?: return null
+        if (uri.scheme != "file") return null
+        val path = uri.path ?: return null
+        val localFile = File(path)
+        if (localFile.exists()) return null
+        val rel = relativePathInsideKnownSnapshot(localFile) ?: return null
+        if (rel.isBlank() || rel.contains("..")) return null
+        return try {
+            val remoteUrl = URL(remoteBaseUrl + rel.split('/').joinToString("/") { Uri.encode(it) })
+            val connection = (remoteUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 30000
+                instanceFollowRedirects = true
+                useCaches = true
+                setRequestProperty("Cache-Control", "max-age=86400")
+            }
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                connection.disconnect()
+                null
+            } else {
+                WebResourceResponse(
+                    guessMimeType(rel),
+                    null,
+                    connection.inputStream
+                )
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun relativePathInsideKnownSnapshot(localFile: File): String? {
+        val candidates = mutableListOf<File>()
+        candidates.add(bundleDir)
+        prefs.getString("active_snapshot_path", null)?.let { candidates.add(File(it)) }
+        filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("prism_remote_") }?.let { candidates.addAll(it) }
+        return candidates.distinctBy { it.absolutePath }.firstNotNullOfOrNull { root ->
+            try {
+                val rootPath = root.canonicalPath + File.separator
+                val filePath = localFile.canonicalPath
+                if (filePath.startsWith(rootPath)) filePath.removePrefix(rootPath).replace(File.separatorChar, '/') else null
+            } catch (_: Throwable) { null }
+        }
+    }
+
+    private fun guessMimeType(path: String): String {
+        val ext = path.substringAfterLast('.', "").lowercase(Locale.US)
+        return when (ext) {
+            "js" -> "application/javascript"
+            "css" -> "text/css"
+            "json" -> "application/json"
+            "html" -> "text/html"
+            "mp3" -> "audio/mpeg"
+            "webp" -> "image/webp"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "svg" -> "image/svg+xml"
+            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
         }
     }
 
@@ -219,8 +300,16 @@ class MainActivity : AppCompatActivity() {
         view.evaluateJavascript(js, null)
     }
 
-    private fun updateRemoteSnapshotInBackground() {
+    private fun updateRemoteSnapshotInBackgroundIfDue() {
         if (!isOnline()) return
+        val now = System.currentTimeMillis()
+        val last = prefs.getLong("last_snapshot_check", 0L)
+        if (now - last < updateCheckIntervalMs) return
+        prefs.edit().putLong("last_snapshot_check", now).apply()
+        updateRemoteSnapshotInBackground()
+    }
+
+    private fun updateRemoteSnapshotInBackground() {
         Thread {
             try {
                 val newDir = File(filesDir, "prism_remote_${System.currentTimeMillis()}")
@@ -229,12 +318,12 @@ class MainActivity : AppCompatActivity() {
                 val tmpExtract = File(cacheDir, "prism_extract_${System.currentTimeMillis()}")
                 if (tmpExtract.exists()) tmpExtract.deleteRecursively()
                 tmpExtract.mkdirs()
-                unzip(tmpZip, tmpExtract)
+                unzipRuntimeOnly(tmpZip, tmpExtract)
                 val root = tmpExtract.listFiles()?.firstOrNull { it.isDirectory && File(it, "index.html").exists() }
                     ?: tmpExtract.takeIf { File(it, "index.html").exists() }
                     ?: return@Thread
                 if (newDir.exists()) newDir.deleteRecursively()
-                copyDirectory(root, newDir)
+                copyDirectoryRuntimeOnly(root, newDir)
                 if (File(newDir, "index.html").exists()) {
                     prefs.edit().putString("active_snapshot_path", newDir.absolutePath).apply()
                 } else {
@@ -242,6 +331,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 tmpExtract.deleteRecursively()
                 tmpZip.delete()
+                pruneOldSnapshotsSafely()
             } catch (_: Throwable) {}
         }.start()
     }
@@ -258,33 +348,53 @@ class MainActivity : AppCompatActivity() {
         connection.disconnect()
     }
 
-    private fun unzip(zip: File, dest: File) {
+    private fun unzipRuntimeOnly(zip: File, dest: File) {
         ZipInputStream(zip.inputStream().buffered()).use { zis ->
             while (true) {
                 val entry = zis.nextEntry ?: break
-                val outFile = File(dest, entry.name)
+                val normalized = entry.name.replace('\\', '/')
+                val nameWithoutRoot = normalized.substringAfter('/', normalized)
+                if (shouldExcludeFromLocalSnapshot(nameWithoutRoot) || entry.isDirectory) {
+                    if (entry.isDirectory && !shouldExcludeFromLocalSnapshot(nameWithoutRoot)) {
+                        File(dest, normalized).mkdirs()
+                    }
+                    zis.closeEntry()
+                    continue
+                }
+                val outFile = File(dest, normalized)
                 val canonicalDest = dest.canonicalPath + File.separator
                 val canonicalOut = outFile.canonicalPath
-                if (!canonicalOut.startsWith(canonicalDest)) continue
-                if (entry.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    FileOutputStream(outFile).use { output -> zis.copyTo(output) }
+                if (!canonicalOut.startsWith(canonicalDest)) {
+                    zis.closeEntry()
+                    continue
                 }
+                outFile.parentFile?.mkdirs()
+                FileOutputStream(outFile).use { output -> zis.copyTo(output) }
                 zis.closeEntry()
             }
         }
     }
 
-    private fun copyDirectory(src: File, dest: File) {
+    private fun copyDirectoryRuntimeOnly(src: File, dest: File) {
         if (src.isDirectory) {
             dest.mkdirs()
-            src.listFiles()?.forEach { child -> copyDirectory(child, File(dest, child.name)) }
+            src.listFiles()?.forEach { child -> copyDirectoryRuntimeOnly(child, File(dest, child.name)) }
         } else {
+            val rel = src.name
+            if (shouldExcludeFromLocalSnapshot(rel)) return
             dest.parentFile?.mkdirs()
             src.inputStream().use { input -> FileOutputStream(dest).use { output -> input.copyTo(output) } }
         }
+    }
+
+    private fun shouldExcludeFromLocalSnapshot(path: String): Boolean {
+        val p = path.trimStart('/').lowercase(Locale.US)
+        if (p.isBlank()) return false
+        return p.startsWith(".git/") ||
+            p.startsWith(".github/") ||
+            p == "readme" || p.startsWith("readme.") ||
+            p.endsWith(".apk") ||
+            p.endsWith(".mp3")
     }
 
     private fun pruneOldSnapshotsSafely() {
@@ -292,7 +402,7 @@ class MainActivity : AppCompatActivity() {
             val active = prefs.getString("active_snapshot_path", null)
             filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("prism_remote_") && it.absolutePath != active }
                 ?.sortedByDescending { it.lastModified() }
-                ?.drop(2)
+                ?.drop(1)
                 ?.forEach { it.deleteRecursively() }
         } catch (_: Throwable) {}
     }

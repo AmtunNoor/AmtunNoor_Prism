@@ -21,7 +21,7 @@ jobs:
           ref: main
           path: quran-web
 
-      - name: Bundle Quran web app into Android assets
+      - name: Bundle lightweight Quran web snapshot into Android assets
         run: |
           rm -rf app/src/main/assets/prism
           mkdir -p app/src/main/assets/prism
@@ -30,12 +30,11 @@ jobs:
             --exclude='.github' \
             --exclude='README*' \
             --exclude='*.apk' \
-            --exclude='listen/*.mp3' \
-            --exclude='learn/*.mp3' \
-            --exclude='names/*.mp3' \
+            --exclude='*.mp3' \
             quran-web/ app/src/main/assets/prism/
 
           echo "VERIFY BUNDLED PRISM:"
+          du -sh app/src/main/assets/prism || true
           ls -la app/src/main/assets/prism
           echo "VERIFY PLUGINS:"
           ls -la app/src/main/assets/prism/plugins || true
@@ -43,6 +42,8 @@ jobs:
           ls -la app/src/main/assets/prism/styles || true
           echo "VERIFY ENGINES:"
           ls -la app/src/main/assets/prism/engines || true
+          echo "VERIFY NO HEAVY FILES:"
+          find app/src/main/assets/prism -type f \( -name '*.mp3' -o -name '*.apk' \) -print
 
       - name: Set up Java Development Kit
         uses: actions/setup-java@v4

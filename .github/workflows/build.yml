@@ -1,9 +1,15 @@
 name: Compile Android TV APK
-on: [push, workflow_dispatch]
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Android App
         uses: actions/checkout@v4
@@ -22,14 +28,27 @@ jobs:
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
-            --exclude='README.md' \
+            --exclude='README*' \
+            --exclude='*.apk' \
+            --exclude='listen/*.mp3' \
+            --exclude='learn/*.mp3' \
+            --exclude='names/*.mp3' \
             quran-web/ app/src/main/assets/prism/
+
+          echo "VERIFY BUNDLED PRISM:"
+          ls -la app/src/main/assets/prism
+          echo "VERIFY PLUGINS:"
+          ls -la app/src/main/assets/prism/plugins || true
+          echo "VERIFY STYLES:"
+          ls -la app/src/main/assets/prism/styles || true
+          echo "VERIFY ENGINES:"
+          ls -la app/src/main/assets/prism/engines || true
 
       - name: Set up Java Development Kit
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
 
       - name: Setup Gradle Environment
         uses: gradle/actions/setup-gradle@v3

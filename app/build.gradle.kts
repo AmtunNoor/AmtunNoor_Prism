@@ -11,19 +11,15 @@ android {
         applicationId = "com.noor.prism"
         minSdk = 21
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.6"
-    }
-
-    buildFeatures {
-        buildConfig = true
+        versionCode = 9
+        versionName = "1.8"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // CRITICAL TV FIX: keeps update/install behavior compatible with your existing TV build setup
-            isDebuggable = true
+            // CRITICAL TV FIX: Bypasses strict production signature locks on your TV Stick
+            isDebuggable = true 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

@@ -11,20 +11,22 @@ android {
         applicationId = "com.noor.prism"
         minSdk = 21
         targetSdk = 34
-        versionCode = 12
-        versionName = "2.1"
+        versionCode = 13
+        versionName = "2.2"
+    }
+
+    buildFeatures {
+        buildConfig = false
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            isDebuggable = false
+            isMinifyEnabled = false
+            isDebuggable = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Retains the project's existing installable GitHub-build behavior.
             signingConfig = signingConfigs.getByName("debug")
         }
     }

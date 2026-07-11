@@ -8,17 +8,28 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Android App
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Verify clean runtime tree
+        run: |
+          test -f app/src/main/java/com/noor/prism/MainActivity.kt
+          test -f app/src/main/AndroidManifest.xml
+          test ! -f app/src/main/res/layout/item_menu_tile.xml
+          test ! -f app/src/main/java/com/noor/prism/MenuAdapter.kt
+          test ! -f app/src/main/java/com/noor/prism/MenuModel.kt
+          test ! -f app/src/main/java/com/noor/prism/WebViewActivity.kt
+          echo "Clean Prism Runtime tree verified"
+
+      - name: Set up Java Development Kit
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle 8.2
+      - name: Setup Gradle Environment
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.2
@@ -26,8 +37,11 @@ jobs:
       - name: Build Release APK
         run: gradle assembleRelease
 
-      - name: Upload APK
+      - name: Report APK size
+        run: ls -lh app/build/outputs/apk/release/app-release.apk
+
+      - name: Save and Provide APK
         uses: actions/upload-artifact@v4
         with:
-          name: NoorPrism-Recovered-Stable
+          name: NoorPrism-Runtime-2.1
           path: app/build/outputs/apk/release/app-release.apk

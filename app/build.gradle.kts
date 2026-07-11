@@ -12,18 +12,19 @@ android {
         minSdk = 21
         targetSdk = 34
         versionCode = 12
-        versionName = "2.0-recovery"
+        versionName = "2.1"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            // CRITICAL TV FIX: Bypasses strict production signature locks on your TV Stick
-            isDebuggable = true 
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Retains the project's existing installable GitHub-build behavior.
             signingConfig = signingConfigs.getByName("debug")
         }
     }

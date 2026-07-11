@@ -8,6 +8,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Remove obsolete native launcher sources from build
+        run: |
+          rm -f app/src/main/java/com/noor/prism/MenuAdapter.kt
+          rm -f app/src/main/java/com/noor/prism/MenuModel.kt
+          rm -f app/src/main/java/com/noor/prism/WebViewActivity.kt
+          rm -f app/src/main/res/layout/activity_main.xml
+          rm -f app/src/main/res/layout/activity_web_view.xml
+          rm -f app/src/main/res/layout/item_menu_tile.xml
+          rm -f app/src/main/assets/menu.json
+
       - name: Set up Java Development Kit
         uses: actions/setup-java@v4
         with:
@@ -25,5 +35,5 @@ jobs:
       - name: Save and Provide APK
         uses: actions/upload-artifact@v4
         with:
-          name: NoorPrism-v1.8.1-Stable-Live
+          name: NoorPrism-Runtime-v2.0
           path: app/build/outputs/apk/release/app-release.apk

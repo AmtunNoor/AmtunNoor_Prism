@@ -1,17 +1,11 @@
 name: Compile Android TV APK
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Android App
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up Java Development Kit
@@ -31,5 +25,5 @@ jobs:
       - name: Save and Provide APK
         uses: actions/upload-artifact@v4
         with:
-          name: NoorPrism-v1.8-Stable-Live
+          name: NoorPrism-v1.8.1-Stable-Live
           path: app/build/outputs/apk/release/app-release.apk

@@ -14,16 +14,11 @@ jobs:
       - name: Checkout Android App
         uses: actions/checkout@v4
 
-      - name: Remove old bundled Prism snapshots
-        run: |
-          rm -rf app/src/main/assets/prism
-          rm -rf quran-web
-
       - name: Set up Java Development Kit
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: temurin
+          distribution: 'temurin'
 
       - name: Setup Gradle Environment
         uses: gradle/actions/setup-gradle@v3

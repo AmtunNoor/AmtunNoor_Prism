@@ -1,10 +1,14 @@
 package com.noor.prism
 
+import android.Manifest
 import android.annotation.SuppressLint
-import android.app.UiModeManager
+import android.app.Activity
 import android.content.Context
-import android.content.res.Configuration
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ActivityInfo
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -15,11 +19,15 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.Window
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
 import android.webkit.ServiceWorkerController
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -27,158 +35,129 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var webView: WebView
     private lateinit var root: FrameLayout
+    private lateinit var webView: WebView
     private lateinit var splash: FrameLayout
     private val handler = Handler(Looper.getMainLooper())
-    private val isTv: Boolean by lazy {
-        val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
-        uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
-    }
+    private val inFlight = ConcurrentHashMap<String, Any>()
+    @Volatile private var audioPlaying = false
+    @Volatile private var pageReady = false
 
-    private val prismUrl: String
-        get() {
-            val device = if (isTv) "tv" else "phone"
-            return "https://amtunnoor.github.io/Quran/index.html?runtime=android&device=$device"
-        }
+    private val prismUrl: String by lazy {
+        val device = if (isTelevision()) "tv" else "phone"
+        "https://amtunnoor.github.io/Quran/index.html?runtime=android&device=$device"
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
-        setImmersiveFlags()
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        handler.postDelayed({
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        }, 1400L)
 
-        root = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(7, 9, 28))
-        }
+        enableImmersiveMode()
+        requestNotificationPermissionIfNeeded()
+
+        root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(4, 8, 28)) }
         webView = WebView(this).apply {
-            setBackgroundColor(Color.rgb(7, 9, 28))
+            setBackgroundColor(Color.rgb(4, 8, 28))
             alpha = 0f
+            isFocusable = true
+            isFocusableInTouchMode = true
         }
-        root.addView(
-            webView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-
         splash = buildSplash()
-        root.addView(
-            splash,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
+
+        root.addView(webView, FrameLayout.LayoutParams(-1, -1))
+        root.addView(splash, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+
         configureWebView()
 
         if (savedInstanceState == null) {
             webView.loadUrl(prismUrl)
         } else {
-            val restored = webView.restoreState(savedInstanceState)
-            if (restored == null) webView.loadUrl(prismUrl)
+            webView.restoreState(savedInstanceState)
+            handler.postDelayed({ revealWebView() }, 350L)
         }
-
-        // Never leave the child stuck on the splash if the network is slow.
-        handler.postDelayed({ revealWebView() }, 15000)
     }
 
     private fun buildSplash(): FrameLayout {
-        val container = FrameLayout(this)
-        container.background = GradientDrawable(
+        val frame = FrameLayout(this)
+        val gradient = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(
-                Color.rgb(8, 12, 45),
-                Color.rgb(34, 22, 86),
-                Color.rgb(7, 45, 79)
-            )
+            intArrayOf(Color.rgb(24, 12, 73), Color.rgb(4, 43, 88))
         )
-
-        val stars = TextView(this).apply {
-            text = "✦     ✧        ✦    ✧       ✦\n      ✧    ✦          ✧\n✧          ✦     ✧          ✦"
-            textSize = if (isTv) 30f else 22f
-            setTextColor(Color.argb(175, 210, 238, 255))
-            gravity = Gravity.CENTER
-            alpha = 0.78f
-        }
-        container.addView(
-            stars,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-
-        val content = FrameLayout(this)
-        val contentParams = FrameLayout.LayoutParams(
-            if (isTv) dp(560) else dp(420),
-            if (isTv) dp(380) else dp(320),
-            Gravity.CENTER
-        )
-        container.addView(content, contentParams)
+        frame.background = gradient
 
         val icon = ImageView(this).apply {
-            setImageResource(com.noor.prism.R.drawable.app_icon)
+            setImageResource(com.noor.prism.R.drawable.app_icon_foreground)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            elevation = dp(14).toFloat()
+            alpha = 0f
+            scaleX = 0.82f
+            scaleY = 0.82f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(650).start()
         }
-        val iconSize = if (isTv) dp(190) else dp(150)
-        content.addView(
-            icon,
-            FrameLayout.LayoutParams(iconSize, iconSize, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-        )
-        icon.animate()
-            .scaleX(1.06f).scaleY(1.06f)
-            .setDuration(1100)
-            .withEndAction {
-                icon.animate().scaleX(1f).scaleY(1f).setDuration(900).start()
+        frame.addView(icon, FrameLayout.LayoutParams(dp(230), dp(230), Gravity.CENTER).apply {
+            bottomMargin = dp(80)
+        })
+
+        val stars = TextView(this).apply {
+            text = "✦   ✧   ✦   ✧   ✦"
+            textSize = 28f
+            setTextColor(Color.rgb(202, 218, 255))
+            gravity = Gravity.CENTER
+            alpha = 0.25f
+            animate().alpha(0.9f).setDuration(900).withEndAction {
+                animate().alpha(0.35f).setDuration(900).start()
             }.start()
+        }
+        frame.addView(stars, FrameLayout.LayoutParams(-1, dp(70), Gravity.CENTER).apply {
+            topMargin = dp(220)
+        })
 
         val title = TextView(this).apply {
-            text = "Noor’s Prism"
-            textSize = if (isTv) 38f else 30f
+            text = "Noor's Prism"
+            textSize = 33f
+            typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
-        content.addView(
-            title,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                dp(70),
-                Gravity.CENTER
-            ).apply { topMargin = if (isTv) dp(82) else dp(60) }
-        )
+        frame.addView(title, FrameLayout.LayoutParams(-1, dp(70), Gravity.CENTER).apply {
+            topMargin = dp(335)
+        })
 
         val subtitle = TextView(this).apply {
-            text = "✨ Preparing your adventure… ✨"
-            textSize = if (isTv) 21f else 17f
-            setTextColor(Color.rgb(211, 235, 255))
+            text = "✨ Preparing your adventure... ✨"
+            textSize = 20f
+            setTextColor(Color.rgb(210, 220, 255))
             gravity = Gravity.CENTER
         }
-        content.addView(
-            subtitle,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                dp(60),
-                Gravity.BOTTOM
-            ).apply { bottomMargin = if (isTv) dp(30) else dp(20) }
-        )
+        frame.addView(subtitle, FrameLayout.LayoutParams(-1, dp(60), Gravity.CENTER).apply {
+            topMargin = dp(425)
+        })
 
-        return container
+        return frame
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
+        webView.addJavascriptInterface(RuntimeBridge(), "PrismNative")
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -194,17 +173,20 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            cacheMode = if (isOnline()) {
-                WebSettings.LOAD_DEFAULT
-            } else {
-                WebSettings.LOAD_CACHE_ELSE_NETWORK
-            }
-
+            cacheMode = if (isOnline()) WebSettings.LOAD_DEFAULT else WebSettings.LOAD_CACHE_ELSE_NETWORK
+            userAgentString = "$userAgentString NoorPrismAndroid/2.2"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 safeBrowsingEnabled = true
+            }
+            @Suppress("DEPRECATION")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                forceDark = WebSettings.FORCE_DARK_OFF
+            }
+            if (Build.VERSION.SDK_INT >= 33) {
+                isAlgorithmicDarkeningAllowed = false
             }
         }
 
@@ -217,26 +199,37 @@ class MainActivity : AppCompatActivity() {
                     cacheMode = WebSettings.LOAD_DEFAULT
                 }
             } catch (_: Throwable) {
-                // Some TV WebView builds expose fewer service-worker settings.
             }
         }
 
         WebView.setWebContentsDebuggingEnabled(false)
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
+        }
+
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView,
-                request: WebResourceRequest
-            ): Boolean {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 view.loadUrl(request.url.toString())
                 return true
             }
 
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                return interceptCacheableAsset(request)
+                    ?: super.shouldInterceptRequest(view, request)
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
-                installAndroidOnlyPresentation()
-                scheduleNonDestructiveTopbarSelfHeal()
-                waitForLandingCardsThenReveal()
+                installRuntimeObserver()
+                scheduleTopbarSelfHeal()
                 requestServiceWorkerUpdateWithoutReload()
+                handler.postDelayed({ checkAndReveal() }, 250L)
+                handler.postDelayed({ checkAndReveal() }, 800L)
+                handler.postDelayed({ checkAndReveal() }, 1600L)
+                handler.postDelayed({ if (!pageReady) revealWebView() }, 5500L)
             }
 
             override fun onReceivedError(
@@ -245,120 +238,51 @@ class MainActivity : AppCompatActivity() {
                 error: WebResourceError
             ) {
                 super.onReceivedError(view, request, error)
-                // Preserve any cached page; never replace Prism with a native fallback menu.
-                handler.postDelayed({ revealWebView() }, 1200)
             }
         }
     }
 
-    /**
-     * Adds presentation-only CSS to the landing page inside the Android app.
-     * It does not alter the DOM, card data, click handlers, plugins, module pages,
-     * audio, coordinates, effects, Learn, 5x or Hifz.
-     */
-    private fun installAndroidOnlyPresentation() {
-        val deviceClass = if (isTv) "prism-runtime-tv" else "prism-runtime-phone"
+    private fun installRuntimeObserver() {
         val script = """
             (function () {
-              try {
-                document.documentElement.classList.add('prism-runtime-android', '$deviceClass');
-                if (document.body) document.body.classList.add('prism-runtime-android', '$deviceClass');
-                if (document.getElementById('prism-runtime-style')) return true;
-                var style = document.createElement('style');
-                style.id = 'prism-runtime-style';
-                style.textContent = `
-                  body.landing-mode.prism-runtime-android .grid {
-                    display: grid !important;
-                    grid-auto-flow: column !important;
-                    grid-template-columns: none !important;
-                    overflow-x: auto !important;
-                    overflow-y: hidden !important;
-                    overscroll-behavior-x: contain !important;
-                    scroll-snap-type: x mandatory !important;
-                    scroll-behavior: smooth !important;
-                    align-content: center !important;
-                    justify-content: start !important;
-                    width: 100% !important;
-                    max-width: none !important;
-                    scrollbar-width: none !important;
-                    padding-inline: clamp(18px,4vw,70px) !important;
-                  }
-                  body.landing-mode.prism-runtime-android .grid::-webkit-scrollbar { display:none !important; }
-                  body.landing-mode.prism-runtime-android .card {
-                    scroll-snap-align: center !important;
-                    contain: layout paint !important;
-                  }
-                  body.landing-mode.prism-runtime-phone .grid {
-                    grid-template-rows: repeat(2, minmax(0,1fr)) !important;
-                    grid-auto-columns: minmax(210px, 30vw) !important;
-                    height: calc(100vh - 150px) !important;
-                    gap: 14px !important;
-                  }
-                  body.landing-mode.prism-runtime-tv .grid {
-                    grid-template-rows: repeat(2, minmax(0,1fr)) !important;
-                    grid-auto-columns: minmax(250px, 22vw) !important;
-                    height: calc(100vh - 175px) !important;
-                    gap: clamp(14px,1.5vw,26px) !important;
-                  }
-                  body.landing-mode.prism-runtime-tv .card.remote-focus {
-                    transform: scale(1.045) !important;
-                    filter: brightness(1.08) drop-shadow(0 0 16px rgba(140,220,255,.72)) !important;
-                  }
-                `;
-                document.head.appendChild(style);
-                return true;
-              } catch (_) { return false; }
+              if (window.__prismAndroidObserverInstalled) return true;
+              window.__prismAndroidObserverInstalled = true;
+
+              function reportAudio() {
+                try {
+                  var playing = Array.from(document.querySelectorAll('audio')).some(function(a) {
+                    return !a.paused && !a.ended && a.readyState > 1;
+                  });
+                  PrismNative.setAudioPlaying(playing);
+                } catch (_) {}
+              }
+
+              document.addEventListener('play', reportAudio, true);
+              document.addEventListener('pause', reportAudio, true);
+              document.addEventListener('ended', reportAudio, true);
+              setInterval(reportAudio, 1200);
+
+              function heal() {
+                try {
+                  if (typeof window.__prismEnsureTopbar === 'function') window.__prismEnsureTopbar();
+                  if (typeof window.__prismHealTopbar === 'function') window.__prismHealTopbar();
+                  window.dispatchEvent(new CustomEvent('prism:ensure-topbar'));
+                } catch (_) {}
+              }
+              heal();
+              var observer = new MutationObserver(function() { heal(); });
+              observer.observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['class','style']});
+              setInterval(heal, 2500);
+              return true;
             })();
         """.trimIndent()
         webView.evaluateJavascript(script, null)
     }
 
-    private fun waitForLandingCardsThenReveal(attempt: Int = 0) {
-        if (!::webView.isInitialized) return
-        val script = """
-            (function () {
-              try {
-                var cards = document.querySelectorAll('body.landing-mode .grid .card');
-                if (!cards || cards.length === 0) return false;
-                var ready = 0;
-                for (var i=0; i<cards.length; i++) {
-                  var img = cards[i].querySelector('img');
-                  if (!img || (img.complete && img.naturalWidth > 0)) ready++;
-                }
-                return ready >= Math.min(cards.length, 4);
-              } catch (_) { return false; }
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(script) { result ->
-            val ready = result == "true"
-            if (ready || attempt >= 30) {
-                revealWebView()
-            } else {
-                handler.postDelayed({ waitForLandingCardsThenReveal(attempt + 1) }, 250)
-            }
+    private fun scheduleTopbarSelfHeal() {
+        longArrayOf(150, 500, 1000, 1800, 3000, 5000, 8000).forEach { delay ->
+            handler.postDelayed({ injectTopbarSelfHeal() }, delay)
         }
-    }
-
-    private fun revealWebView() {
-        if (!::webView.isInitialized || !::splash.isInitialized) return
-        if (webView.alpha < 1f) {
-            webView.animate().alpha(1f).setDuration(400).start()
-        }
-        if (splash.visibility == View.VISIBLE) {
-            splash.animate()
-                .alpha(0f)
-                .setDuration(450)
-                .withEndAction {
-                    splash.visibility = View.GONE
-                    splash.alpha = 1f
-                }
-                .start()
-        }
-    }
-
-    private fun scheduleNonDestructiveTopbarSelfHeal() {
-        val delays = longArrayOf(250, 700, 1400, 2500, 4000, 6500, 9000)
-        delays.forEach { delay -> handler.postDelayed({ injectTopbarSelfHeal() }, delay) }
     }
 
     private fun injectTopbarSelfHeal() {
@@ -366,25 +290,20 @@ class MainActivity : AppCompatActivity() {
         val script = """
             (function () {
               try {
-                try { if (typeof window.__prismEnsureTopbar === 'function') window.__prismEnsureTopbar(); } catch (_) {}
-                try { if (typeof window.__prismHealTopbar === 'function') window.__prismHealTopbar(); } catch (_) {}
-                try { window.dispatchEvent(new CustomEvent('prism:ensure-topbar')); } catch (_) {}
                 var body = document.body;
                 if (!body || body.classList.contains('landing-mode')) return true;
-                var skip = ['plugin-letters','plugin-angels','plugin-pillars','plugin-months','plugin-numbers'];
-                for (var i=0; i<skip.length; i++) if (body.classList.contains(skip[i])) return true;
                 var topbar = document.getElementById('topbar') || document.querySelector('.topbar');
-                if (!topbar) return false;
-                var cs = getComputedStyle(topbar), r = topbar.getBoundingClientRect();
-                var hidden = cs.display === 'none' || cs.visibility === 'hidden' ||
-                             parseFloat(cs.opacity || '1') === 0 || r.height < 8;
-                if (hidden) {
+                if (!topbar) {
+                  try { if (typeof window.__prismEnsureTopbar === 'function') window.__prismEnsureTopbar(); } catch (_) {}
+                  return false;
+                }
+                var style = getComputedStyle(topbar), rect = topbar.getBoundingClientRect();
+                if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0 || rect.height < 8) {
                   topbar.style.setProperty('display','flex','important');
                   topbar.style.setProperty('visibility','visible','important');
                   topbar.style.setProperty('opacity','1','important');
                   topbar.style.setProperty('pointer-events','auto','important');
                   topbar.style.setProperty('z-index','999999','important');
-                  body.classList.add('prism-android-topbar-healed','show-topbar');
                 }
                 return true;
               } catch (_) { return false; }
@@ -393,29 +312,178 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    private fun requestServiceWorkerUpdateWithoutReload() {
+    private fun checkAndReveal() {
+        if (!::webView.isInitialized || pageReady) return
         val script = """
             (function () {
-              if (!('serviceWorker' in navigator)) return;
-              navigator.serviceWorker.getRegistrations().then(function (regs) {
-                regs.forEach(function (reg) { try { reg.update(); } catch (_) {} });
-              }).catch(function () {});
+              try {
+                var body = document.body;
+                if (!body) return false;
+                var cards = document.querySelectorAll('[data-plugin], .menu-card, .surah-card, .card, .tile');
+                var meaningful = (body.innerText || '').trim().length > 80;
+                return meaningful && (cards.length > 0 || !body.classList.contains('landing-mode'));
+              } catch (_) { return false; }
             })();
         """.trimIndent()
-        webView.evaluateJavascript(script, null)
+        webView.evaluateJavascript(script) { result ->
+            if (result == "true") revealWebView()
+        }
     }
 
-    private fun setImmersiveFlags() {
-        @Suppress("DEPRECATION")
-        run {
-            window.decorView.systemUiVisibility =
-                View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    private fun revealWebView() {
+        if (pageReady) return
+        pageReady = true
+        webView.animate().alpha(1f).setDuration(300).start()
+        splash.animate().alpha(0f).setDuration(420).withEndAction {
+            splash.visibility = View.GONE
+        }.start()
+        webView.requestFocus()
+    }
+
+    private fun requestServiceWorkerUpdateWithoutReload() {
+        webView.evaluateJavascript(
+            """
+            (function(){
+              if (!('serviceWorker' in navigator)) return;
+              navigator.serviceWorker.getRegistrations().then(function(regs){
+                regs.forEach(function(reg){ try { reg.update(); } catch (_) {} });
+              }).catch(function(){});
+            })();
+            """.trimIndent(),
+            null
+        )
+    }
+
+    private fun interceptCacheableAsset(request: WebResourceRequest): WebResourceResponse? {
+        if (!request.method.equals("GET", ignoreCase = true)) return null
+        val uri = request.url
+        if (!uri.host.equals("amtunnoor.github.io", ignoreCase = true)) return null
+        val path = uri.path ?: return null
+        val extension = path.substringAfterLast('.', "").lowercase(Locale.US)
+        val cacheable = extension in setOf("mp3", "webp", "png", "jpg", "jpeg", "gif", "svg")
+        if (!cacheable) return null
+
+        return try {
+            val url = uri.toString()
+            val file = cachedFileFor(url, extension)
+            if (!file.exists() || file.length() == 0L) {
+                synchronized(inFlight.computeIfAbsent(url) { Any() }) {
+                    if (!file.exists() || file.length() == 0L) downloadFully(url, file)
+                }
+                inFlight.remove(url)
+            }
+            if (!file.exists() || file.length() == 0L) return null
+            buildCachedResponse(file, extension, request.requestHeaders["Range"])
+        } catch (_: Throwable) {
+            null
         }
+    }
+
+    private fun cachedFileFor(url: String, extension: String): File {
+        val digest = MessageDigest.getInstance("SHA-256").digest(url.toByteArray())
+        val name = digest.joinToString("") { "%02x".format(it) }
+        val dir = File(cacheDir, "prism-assets").apply { mkdirs() }
+        return File(dir, "$name.$extension")
+    }
+
+    private fun downloadFully(urlString: String, destination: File) {
+        val temp = File(destination.parentFile, destination.name + ".part")
+        if (temp.exists()) temp.delete()
+        val connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15000
+            readTimeout = 60000
+            instanceFollowRedirects = true
+            useCaches = true
+            setRequestProperty("User-Agent", "NoorPrismAndroid/2.2")
+        }
+        try {
+            connection.connect()
+            if (connection.responseCode !in 200..299) return
+            connection.inputStream.use { input ->
+                FileOutputStream(temp).use { output -> input.copyTo(output, 64 * 1024) }
+            }
+            val expected = connection.contentLengthLong
+            if (temp.length() > 0L && (expected <= 0L || temp.length() == expected)) {
+                if (destination.exists()) destination.delete()
+                temp.renameTo(destination)
+            }
+        } finally {
+            connection.disconnect()
+            if (temp.exists() && !destination.exists()) temp.delete()
+        }
+    }
+
+    private fun buildCachedResponse(file: File, extension: String, rangeHeader: String?): WebResourceResponse {
+        val mime = when (extension) {
+            "mp3" -> "audio/mpeg"
+            "webp" -> "image/webp"
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "gif" -> "image/gif"
+            "svg" -> "image/svg+xml"
+            else -> "application/octet-stream"
+        }
+
+        if (rangeHeader.isNullOrBlank() || !rangeHeader.startsWith("bytes=")) {
+            return WebResourceResponse(mime, null, FileInputStream(file)).apply {
+                responseHeaders = mapOf(
+                    "Accept-Ranges" to "bytes",
+                    "Content-Length" to file.length().toString(),
+                    "Cache-Control" to "public, max-age=31536000"
+                )
+            }
+        }
+
+        val total = file.length()
+        val range = rangeHeader.removePrefix("bytes=").substringBefore(',')
+        val start = range.substringBefore('-').toLongOrNull() ?: 0L
+        val end = range.substringAfter('-', "").toLongOrNull()?.coerceAtMost(total - 1) ?: (total - 1)
+        if (start >= total || end < start) {
+            return WebResourceResponse(mime, null, 416, "Range Not Satisfiable", mapOf("Content-Range" to "bytes */$total"), ByteArrayInputStream(ByteArray(0)))
+        }
+        val length = end - start + 1
+        val input = RangedFileInputStream(file, start, length)
+        return WebResourceResponse(
+            mime,
+            null,
+            206,
+            "Partial Content",
+            mapOf(
+                "Accept-Ranges" to "bytes",
+                "Content-Range" to "bytes $start-$end/$total",
+                "Content-Length" to length.toString(),
+                "Cache-Control" to "public, max-age=31536000"
+            ),
+            input
+        )
+    }
+
+    private inner class RuntimeBridge {
+        @JavascriptInterface
+        fun setAudioPlaying(playing: Boolean) {
+            audioPlaying = playing
+            runOnUiThread {
+                if (playing) startPlaybackService() else stopPlaybackService()
+            }
+        }
+    }
+
+    private fun startPlaybackService() {
+        val intent = Intent(this, PlaybackKeepAliveService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+        } catch (_: Throwable) {
+        }
+        try {
+            WebView.enableSlowWholeDocumentDraw()
+            webView.resumeTimers()
+            webView.onResume()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun stopPlaybackService() {
+        try { stopService(Intent(this, PlaybackKeepAliveService::class.java)) } catch (_: Throwable) {}
     }
 
     private fun isOnline(): Boolean {
@@ -429,31 +497,73 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun isTelevision(): Boolean = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
+    private fun enableImmersiveMode() {
+        window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            window.insetsController?.systemBarsBehavior =
+                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility =
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2202)
+        }
+    }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        if (::webView.isInitialized) webView.saveState(outState)
+        webView.saveState(outState)
     }
 
     override fun onResume() {
         super.onResume()
-        setImmersiveFlags()
+        enableImmersiveMode()
         if (::webView.isInitialized) {
             webView.onResume()
             webView.resumeTimers()
-            scheduleNonDestructiveTopbarSelfHeal()
+            scheduleTopbarSelfHeal()
         }
     }
 
     override fun onPause() {
-        if (::webView.isInitialized) webView.onPause()
+        if (::webView.isInitialized && !audioPlaying) {
+            webView.onPause()
+        } else if (::webView.isInitialized) {
+            webView.onResume()
+            webView.resumeTimers()
+            startPlaybackService()
+        }
         super.onPause()
+    }
+
+    override fun onStop() {
+        if (audioPlaying && ::webView.isInitialized) {
+            webView.onResume()
+            webView.resumeTimers()
+            startPlaybackService()
+        }
+        super.onStop()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (!audioPlaying) stopPlaybackService()
         if (::webView.isInitialized) {
+            try { webView.removeJavascriptInterface("PrismNative") } catch (_: Throwable) {}
             try { webView.destroy() } catch (_: Throwable) {}
         }
         super.onDestroy()
@@ -461,13 +571,32 @@ class MainActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (::webView.isInitialized && webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                moveTaskToBack(true)
-            }
+            if (::webView.isInitialized && webView.canGoBack()) webView.goBack() else moveTaskToBack(true)
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+}
+
+private class RangedFileInputStream(file: File, start: Long, private var remaining: Long) : InputStream() {
+    private val input = FileInputStream(file).apply { channel.position(start) }
+
+    override fun read(): Int {
+        if (remaining <= 0) return -1
+        val value = input.read()
+        if (value >= 0) remaining--
+        return value
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (remaining <= 0) return -1
+        val toRead = minOf(length.toLong(), remaining).toInt()
+        val read = input.read(buffer, offset, toRead)
+        if (read > 0) remaining -= read.toLong()
+        return read
+    }
+
+    override fun close() = input.close()
 }

@@ -28,8 +28,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val handler = Handler(Looper.getMainLooper())
 
-    // Stable URL: no timestamp/cache-buster on every launch.
-    // This allows WebView + the existing service worker to reuse cached UI/assets.
     private val prismUrl = "https://amtunnoor.github.io/Quran/index.html?app=prism-live"
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -92,11 +90,7 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            cacheMode = if (isOnline()) {
-                WebSettings.LOAD_DEFAULT
-            } else {
-                WebSettings.LOAD_CACHE_ELSE_NETWORK
-            }
+            cacheMode = if (isOnline()) WebSettings.LOAD_DEFAULT else WebSettings.LOAD_CACHE_ELSE_NETWORK
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -115,7 +109,7 @@ class MainActivity : AppCompatActivity() {
                     cacheMode = WebSettings.LOAD_DEFAULT
                 }
             } catch (_: Throwable) {
-                // Older/custom WebView implementations may not expose all settings.
+                // Some vendor WebView implementations expose only part of this API.
             }
         }
 
@@ -126,10 +120,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView,
-                request: WebResourceRequest
-            ): Boolean {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 view.loadUrl(request.url.toString())
                 return true
             }
@@ -146,15 +137,14 @@ class MainActivity : AppCompatActivity() {
                 error: WebResourceError
             ) {
                 super.onReceivedError(view, request, error)
-                // Keep any available cached page visible. Never replace Prism with a native
-                // dashboard or a partial local snapshot.
+                // Preserve any usable cached page. Never replace Prism with a partial native dashboard.
             }
         }
     }
 
     /**
-     * Repairs only the fixed Prism menu/topbar.
-     * It never reloads the page, restarts audio, resets effects, or navigates away.
+     * Repairs only the fixed Prism topbar/menu. It does not reload the page,
+     * restart audio, reset effects, or interrupt Learn/5x/Hifz.
      */
     private fun scheduleNonDestructiveTopbarSelfHeal() {
         val delaysMs = longArrayOf(250, 700, 1400, 2500, 4000, 6500, 9000)
@@ -172,7 +162,6 @@ class MainActivity : AppCompatActivity() {
                 document.documentElement.classList.add('prism-android-app');
                 if (document.body) document.body.classList.add('prism-android-app');
 
-                // Use the web app's own repair hooks first, when available.
                 try { if (typeof window.__prismEnsureTopbar === 'function') window.__prismEnsureTopbar(); } catch (_) {}
                 try { if (typeof window.__prismHealTopbar === 'function') window.__prismHealTopbar(); } catch (_) {}
                 try { window.dispatchEvent(new CustomEvent('prism:ensure-topbar')); } catch (_) {}
@@ -180,8 +169,6 @@ class MainActivity : AppCompatActivity() {
                 var body = document.body;
                 if (!body || body.classList.contains('landing-mode')) return true;
 
-                // Visual modules intentionally using floating controls should not receive
-                // the fixed full menu bar.
                 var skip = ['plugin-letters','plugin-angels','plugin-pillars','plugin-months','plugin-numbers'];
                 for (var i = 0; i < skip.length; i++) {
                   if (body.classList.contains(skip[i])) return true;
@@ -215,7 +202,7 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    /** Updates the service worker registration in the background without reloading Prism. */
+    /** Ask the existing service worker to check for updates without reloading Prism. */
     private fun requestServiceWorkerUpdateWithoutReload() {
         val script = """
             (function () {

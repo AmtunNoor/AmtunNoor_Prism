@@ -31,10 +31,5 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name="com.noor.prism.WebViewActivity"
-            android:exported="false"
-            android:screenOrientation="sensorLandscape" />
-
     </application>
 </manifest>

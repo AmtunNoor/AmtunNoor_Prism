@@ -1,16 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.NoorPrism" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowBackground">@drawable/splash_gradient</item>
+        <item name="android:windowBackground">@color/prism_icon_background</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowDisablePreview">false</item>
         <item name="android:fontFamily">sans</item>
         <item name="colorPrimary">#62D9FF</item>
         <item name="colorAccent">#FFB3EB</item>
-        <item name="android:navigationBarColor">#000000</item>
-        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#04081C</item>
+        <item name="android:statusBarColor">#04081C</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightStatusBar">false</item>
         <item name="android:forceDarkAllowed">false</item>
+    </style>
+
+    <style name="Theme.NoorPrism.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/prism_icon_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/app_icon_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.NoorPrism</item>
     </style>
 </resources>

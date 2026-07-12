@@ -73,11 +73,16 @@ class PlaybackKeepAliveService : Service() {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
+        val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
             launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            pendingIntentFlags
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -142,3 +147,4 @@ class PlaybackKeepAliveService : Service() {
         private const val MAX_WAKELOCK_MS = 4 * 60 * 60 * 1000L
     }
 }
+

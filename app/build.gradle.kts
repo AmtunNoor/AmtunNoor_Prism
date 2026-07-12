@@ -1,47 +1,5 @@
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    id("com.android.application") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
 }
 
-android {
-    namespace = "com.noor.prism"
-    compileSdk = 34
-
-    defaultConfig {
-        applicationId = "com.noor.prism"
-        minSdk = 21
-        targetSdk = 34
-        versionCode = 13
-        versionName = "2.2"
-    }
-
-    buildFeatures {
-        buildConfig = false
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            isDebuggable = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-            signingConfig = signingConfigs.getByName("debug")
-        }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-}
-
-dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-}

@@ -2,11 +2,11 @@ package com.noor.prism
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -37,12 +37,8 @@ class PrismLoadingView(context: Context) : View(context) {
         style = Paint.Style.STROKE
         strokeWidth = 2.2f * density
     }
-    private val prismPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-        strokeWidth = 3.2f * density
-    }
+    private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val logoBitmap = BitmapFactory.decodeResource(resources, R.drawable.app_icon)
     private val particlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -202,34 +198,15 @@ class PrismLoadingView(context: Context) : View(context) {
         canvas.drawArc(ringRect, 175f, 105f, false, ringPaint)
         canvas.restore()
 
-        val topY = cy - radius * 0.78f
-        val leftX = cx - radius * 0.76f
-        val rightX = cx + radius * 0.76f
-        val bottomY = cy + radius * 0.72f
-        val prism = Path().apply {
-            moveTo(cx, topY)
-            lineTo(rightX, bottomY)
-            lineTo(leftX, bottomY)
-            close()
-            moveTo(cx, topY)
-            lineTo(cx, bottomY)
-            moveTo(leftX, bottomY)
-            lineTo(cx, cy + radius * 0.05f)
-            lineTo(rightX, bottomY)
-        }
-        prismPaint.shader = LinearGradient(
-            leftX, topY, rightX, bottomY,
-            intArrayOf(
-                Color.rgb(182, 247, 255),
-                Color.rgb(106, 218, 255),
-                Color.rgb(218, 153, 255),
-                Color.rgb(255, 218, 143)
-            ),
-            null,
-            Shader.TileMode.CLAMP
+        val logoRadius = radius * 1.08f
+        val logoRect = RectF(
+            cx - logoRadius,
+            cy - logoRadius,
+            cx + logoRadius,
+            cy + logoRadius
         )
-        prismPaint.alpha = 245
-        canvas.drawPath(prism, prismPaint)
+        logoPaint.alpha = (225 + 30 * ((sin(phase * 1.15f) + 1f) / 2f)).toInt().coerceIn(0, 255)
+        canvas.drawBitmap(logoBitmap, null, logoRect, logoPaint)
     }
 
     private fun drawParticles(canvas: Canvas, w: Float, h: Float) {

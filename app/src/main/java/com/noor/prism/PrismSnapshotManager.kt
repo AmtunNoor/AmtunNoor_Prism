@@ -479,25 +479,8 @@ class PrismSnapshotManager(private val context: Context) {
         }
 
         val length = file.length()
-        val range = parseRange(rangeHeader, length)
-        if (range != null) {
-            val (start, end) = range
-            val stream = FileInputStream(file)
-            skipFully(stream, start)
-            val count = end - start + 1L
-            WebResourceResponse(
-                mime, encoding, 206, "Partial Content",
-                mapOf(
-                    "Access-Control-Allow-Origin" to "*",
-                    "Cache-Control" to "no-store",
-                    "Accept-Ranges" to "bytes",
-                    "Content-Range" to "bytes $start-$end/$length",
-                    "Content-Length" to count.toString()
-                ),
-                LimitedInputStream(stream, count)
-            )
-        } else {
-            WebResourceResponse(
+        when (val decision = parseRange(rangeHeader, length)) {
+            RangeDecision.None -> WebResourceResponse(
                 mime, encoding, 200, "OK",
                 mapOf(
                     "Access-Control-Allow-Origin" to "*",
@@ -507,19 +490,77 @@ class PrismSnapshotManager(private val context: Context) {
                 ),
                 FileInputStream(file)
             )
+
+            RangeDecision.Unsatisfiable -> WebResourceResponse(
+                mime, encoding, 416, "Range Not Satisfiable",
+                mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store",
+                    "Accept-Ranges" to "bytes",
+                    "Content-Range" to "bytes */$length",
+                    "Content-Length" to "0"
+                ),
+                ByteArrayInputStream(ByteArray(0))
+            )
+
+            is RangeDecision.Valid -> {
+                val start = decision.start
+                val end = decision.end
+                val stream = FileInputStream(file)
+                skipFully(stream, start)
+                val count = end - start + 1L
+                WebResourceResponse(
+                    mime, encoding, 206, "Partial Content",
+                    mapOf(
+                        "Access-Control-Allow-Origin" to "*",
+                        "Cache-Control" to "no-store",
+                        "Accept-Ranges" to "bytes",
+                        "Content-Range" to "bytes $start-$end/$length",
+                        "Content-Length" to count.toString()
+                    ),
+                    LimitedInputStream(stream, count)
+                )
+            }
         }
     }.getOrNull()
 
-    private fun parseRange(header: String?, length: Long): Pair<Long, Long>? {
-        if (header.isNullOrBlank() || !header.startsWith("bytes=")) return null
-        val value = header.removePrefix("bytes=").substringBefore(',').trim()
-        val parts = value.split('-', limit = 2)
-        if (parts.size != 2) return null
-        val start = parts[0].toLongOrNull() ?: return null
-        val requestedEnd = parts[1].toLongOrNull() ?: (length - 1L)
-        if (start < 0L || start >= length) return null
-        val end = requestedEnd.coerceIn(start, length - 1L)
-        return start to end
+    private sealed interface RangeDecision {
+        data object None : RangeDecision
+        data object Unsatisfiable : RangeDecision
+        data class Valid(val start: Long, val end: Long) : RangeDecision
+    }
+
+    /** RFC 7233 single-byte-range parser used by Chromium's media stack. */
+    private fun parseRange(header: String?, length: Long): RangeDecision {
+        if (header.isNullOrBlank()) return RangeDecision.None
+        if (!header.startsWith("bytes=", ignoreCase = true) || length <= 0L) {
+            return RangeDecision.Unsatisfiable
+        }
+
+        val value = header.substringAfter('=').substringBefore(',').trim()
+        val dash = value.indexOf('-')
+        if (dash < 0) return RangeDecision.Unsatisfiable
+
+        val first = value.substring(0, dash).trim()
+        val last = value.substring(dash + 1).trim()
+
+        // Suffix range, for example: bytes=-65536
+        if (first.isEmpty()) {
+            val suffixLength = last.toLongOrNull() ?: return RangeDecision.Unsatisfiable
+            if (suffixLength <= 0L) return RangeDecision.Unsatisfiable
+            val actualLength = minOf(suffixLength, length)
+            return RangeDecision.Valid(length - actualLength, length - 1L)
+        }
+
+        val start = first.toLongOrNull() ?: return RangeDecision.Unsatisfiable
+        if (start < 0L || start >= length) return RangeDecision.Unsatisfiable
+
+        // Open-ended range, for example: bytes=12345-
+        val requestedEnd = if (last.isEmpty()) length - 1L
+        else last.toLongOrNull() ?: return RangeDecision.Unsatisfiable
+        if (requestedEnd < start) return RangeDecision.Unsatisfiable
+
+        return RangeDecision.Valid(start, minOf(requestedEnd, length - 1L))
     }
 
     private fun skipFully(stream: InputStream, bytes: Long) {
@@ -554,6 +595,8 @@ class PrismSnapshotManager(private val context: Context) {
             if (count > 0) remaining -= count.toLong()
             return count
         }
+
+        override fun available(): Int = minOf(source.available().toLong(), remaining).toInt()
 
         override fun close() = source.close()
     }

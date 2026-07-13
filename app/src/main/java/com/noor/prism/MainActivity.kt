@@ -46,10 +46,6 @@ class MainActivity : AppCompatActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopAudioService = Runnable { if (!audioPlaying) stopPlaybackService() }
-    private val firstLaunchFallback = Runnable {
-        if (!firstContentShown && isOnline()) loadPrism(showLoader = true)
-    }
-
     @Volatile private var audioPlaying = false
     private var firstContentShown = false
     private var mainFrameFailed = false
@@ -86,7 +82,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRuntime() {
-        mainHandler.removeCallbacks(firstLaunchFallback)
         showError(false)
         homeFallback.visibility = View.GONE
 
@@ -115,18 +110,13 @@ class MainActivity : AppCompatActivity() {
             onComplete = { result ->
                 runOnUiThread {
                     syncStarted = false
-                    if (!pageLoadStarted && (result.hasUsableSnapshot || isOnline())) {
-                        loadAfterMinimumIntro()
-                    } else if (!result.success && !pageLoadStarted && !isOnline()) {
+                    if (!result.success && !pageLoadStarted) {
                         showLoading(false)
                         showError(true)
                     }
                 }
             }
         )
-
-        // Never hold a child on the intro while the full offline copy is still downloading.
-        mainHandler.postDelayed(firstLaunchFallback, MAX_FIRST_LAUNCH_WAIT_MS)
     }
 
     private fun loadAfterMinimumIntro() {
@@ -308,7 +298,6 @@ class MainActivity : AppCompatActivity() {
     private fun loadPrism(showLoader: Boolean) {
         if (pageLoadStarted && !mainFrameFailed) return
         pageLoadStarted = true
-        mainHandler.removeCallbacks(firstLaunchFallback)
         mainFrameFailed = false
         showError(false)
         homeFallback.visibility = View.GONE
@@ -327,53 +316,55 @@ class MainActivity : AppCompatActivity() {
                     var playing = Array.prototype.some.call(document.querySelectorAll('audio,video'), function (m) {
                       return !m.paused && !m.ended && m.readyState >= 2;
                     });
-                    if (playing !== lastAudio) { lastAudio = playing; window.PrismNative.setAudioPlaying(playing); }
+                    if (playing !== lastAudio) {
+                      lastAudio = playing;
+                      window.PrismNative.setAudioPlaying(playing);
+                    }
                   } catch (_) {}
                 }
-                ['play','playing','pause','ended','emptied'].forEach(function(e){ document.addEventListener(e, reportAudio, true); });
-                setInterval(reportAudio, 1000);
-                reportAudio();
-              }
-
-              if (!window.__noorPrismNavigationGuard) {
-                window.__noorPrismNavigationGuard = true;
-                function guardNavigation() {
-                  try {
-                    var params = new URLSearchParams(location.search);
-                    var plugin = (params.get('plugin') || '').toLowerCase();
-                    var body = document.body;
-                    var protectedModule = ['quran','names','dua','salah'].indexOf(plugin) >= 0 ||
-                      location.host === 'busymommh.github.io' ||
-                      (body && (body.classList.contains('plugin-names') || body.classList.contains('plugin-quran')));
-                    var landing = body && body.classList.contains('landing-mode');
-                    if (landing) protectedModule = false;
-                    var top = document.getElementById('topbar');
-                    if (protectedModule && top) {
-                      top.classList.add('prism-topbar-ready');
-                      top.style.setProperty('display','flex','important');
-                      top.style.setProperty('visibility','visible','important');
-                      top.style.setProperty('opacity','1','important');
-                      var home = document.getElementById('btnBack');
-                      if (home) home.style.setProperty('display','inline-block','important');
-                    }
-                    var visible = !!(top && top.getClientRects().length &&
-                      getComputedStyle(top).visibility !== 'hidden' && getComputedStyle(top).display !== 'none');
-                    window.PrismNative.setHomeFallbackVisible(protectedModule && !visible);
-                  } catch (_) { window.PrismNative.setHomeFallbackVisible(true); }
-                }
-                new MutationObserver(guardNavigation).observe(document.documentElement, {
-                  subtree:true, childList:true, attributes:true, attributeFilter:['class','style']
+                ['play','playing','pause','ended','emptied'].forEach(function(e){
+                  document.addEventListener(e, reportAudio, true);
                 });
-                window.addEventListener('pageshow', guardNavigation);
-                window.addEventListener('popstate', guardNavigation);
-                window.addEventListener('hashchange', guardNavigation);
-                document.addEventListener('visibilitychange', guardNavigation);
-                setInterval(guardNavigation, 750);
-                guardNavigation();
+                setInterval(reportAudio, 1500);
+                reportAudio();
               }
             })();
         """.trimIndent()
         webView.evaluateJavascript(script, null)
+        refreshNavigationFallback()
+        webView.postDelayed({ refreshNavigationFallback() }, 900L)
+    }
+
+    /**
+     * Read-only navigation check. It never changes web styles/classes, avoiding the
+     * MutationObserver feedback loop that previously froze the page and exposed the
+     * audio toolbar over the landing cards.
+     */
+    private fun refreshNavigationFallback() {
+        if (!firstContentShown || webView.visibility != View.VISIBLE) return
+        val script = """
+            (function () {
+              try {
+                var body = document.body;
+                if (!body || body.classList.contains('landing-mode')) return false;
+                var params = new URLSearchParams(location.search);
+                var plugin = (params.get('plugin') || '').toLowerCase();
+                var protectedModule = ['quran','names','dua','salah'].indexOf(plugin) >= 0 ||
+                  location.host === 'busymommh.github.io' ||
+                  body.classList.contains('plugin-names') || body.classList.contains('plugin-quran');
+                if (!protectedModule) return false;
+                var top = document.getElementById('topbar');
+                var visible = !!(top && top.getClientRects().length &&
+                  getComputedStyle(top).visibility !== 'hidden' &&
+                  getComputedStyle(top).display !== 'none' &&
+                  parseFloat(getComputedStyle(top).opacity || '1') > 0);
+                return !visible;
+              } catch (_) { return true; }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { result ->
+            homeFallback.visibility = if (result == "true" && webView.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        }
     }
 
     private fun configureBackNavigation() {
@@ -508,7 +499,10 @@ class MainActivity : AppCompatActivity() {
         enableImmersiveMode()
         webView.onResume()
         webView.resumeTimers()
-        if (firstContentShown) installRuntimeObservers()
+        if (firstContentShown) {
+            installRuntimeObservers()
+            webView.postDelayed({ refreshNavigationFallback() }, 500L)
+        }
     }
 
     override fun onPause() {
@@ -548,7 +542,6 @@ class MainActivity : AppCompatActivity() {
         private const val NATIVE_BRIDGE = "PrismNative"
         private const val AUDIO_STOP_GRACE_MS = 1800L
         private const val MIN_INTRO_MS = 1800L
-        private const val MAX_FIRST_LAUNCH_WAIT_MS = 6500L
         private const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
         private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
         private val PRISM_BACKGROUND = Color.rgb(4, 8, 28)

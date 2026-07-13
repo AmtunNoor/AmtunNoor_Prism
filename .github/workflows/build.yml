@@ -51,7 +51,7 @@ jobs:
       - name: Upload validated APK and lint report
         uses: actions/upload-artifact@v4
         with:
-          name: NoorPrism-Runtime-v3.0.0-RC1-APK
+          name: NoorPrism-Runtime-v3.0.0-RC2-APK
           if-no-files-found: error
           path: |
             app/build/outputs/apk/release/app-release.apk

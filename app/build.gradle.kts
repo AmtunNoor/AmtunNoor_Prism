@@ -11,8 +11,8 @@ android {
         applicationId = "com.noor.prism"
         minSdk = 21
         targetSdk = 35
-        versionCode = 16
-        versionName = "3.0.0-rc1"
+        versionCode = 17
+        versionName = "3.0.0-rc2"
     }
 
     buildFeatures {

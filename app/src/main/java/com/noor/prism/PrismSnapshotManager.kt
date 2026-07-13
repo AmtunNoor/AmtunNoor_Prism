@@ -7,13 +7,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -21,21 +25,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Offline-first, atomic snapshot cache for the public Prism GitHub Pages repository.
- *
- * A complete Git tree is downloaded into a staging directory. The live snapshot is
- * swapped only after every selected runtime file is present and verified. Existing
- * snapshots remain untouched if a sync is interrupted or any required file fails.
- */
+/** Manifest-driven, persistent and atomic offline store for Prism. */
 class PrismSnapshotManager(private val context: Context) {
 
-    data class Progress(
-        val completed: Int,
-        val total: Int,
-        val ready: Boolean,
-        val message: String = "Loading Prism…"
-    )
+    data class Progress(val completed: Int, val total: Int)
 
     data class SyncResult(
         val success: Boolean,
@@ -46,90 +39,115 @@ class PrismSnapshotManager(private val context: Context) {
 
     private data class RemoteFile(
         val path: String,
-        val sha: String,
+        val url: String,
         val size: Long,
-        val priority: Int
+        val sha256: String,
+        val priority: Int,
+        val lane: String
+    )
+
+    private data class RemoteSnapshot(
+        val version: String,
+        val entryPoint: String,
+        val aliases: Map<String, String>,
+        val files: List<RemoteFile>,
+        val rawJson: String
     )
 
     private val cacheRoot = File(context.filesDir, CACHE_ROOT)
     private val activeDir = File(cacheRoot, ACTIVE_DIR)
     private val stagingDir = File(cacheRoot, STAGING_DIR)
     private val backupDir = File(cacheRoot, BACKUP_DIR)
-    private val syncRunning = AtomicBoolean(false)
-    private val ioPool = Executors.newSingleThreadExecutor { runnable ->
+    private val coordinator = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "PrismSnapshotCoordinator").apply { isDaemon = true }
     }
+    private val syncRunning = AtomicBoolean(false)
+    private val verifiedStagingPaths = Collections.synchronizedSet(mutableSetOf<String>())
 
     init {
         cacheRoot.mkdirs()
         recoverInterruptedSwap()
     }
 
-    fun hasUsableSnapshot(): Boolean =
-        File(activeDir, INDEX_PATH).isFile && File(activeDir, SNAPSHOT_MANIFEST).isFile
+    fun hasUsableSnapshot(): Boolean {
+        val state = readJson(File(activeDir, LOCAL_STATE)) ?: return false
+        val entry = state.optString("entryPoint", INDEX_PATH)
+        return state.optInt("schema", 0) == 1 && safeFile(activeDir, entry).isFile
+    }
 
     fun activeIndexUrl(device: String): String =
         "$PAGES_ROOT$INDEX_PATH?runtime=android&device=$device"
 
     fun startSync(
         force: Boolean = false,
-        onProgress: (Progress) -> Unit,
+        onReady: () -> Unit = {},
+        onProgress: (Progress) -> Unit = {},
         onComplete: (SyncResult) -> Unit
     ) {
         if (!syncRunning.compareAndSet(false, true)) {
-            onComplete(SyncResult(success = true, updated = false, hasUsableSnapshot = hasUsableSnapshot()))
+            onComplete(SyncResult(true, false, hasUsableSnapshot()))
             return
         }
 
-        ioPool.execute {
-            val hadSnapshot = hasUsableSnapshot()
+        coordinator.execute {
+            val readySent = AtomicBoolean(false)
             try {
-                onProgress(Progress(0, 0, hadSnapshot))
-                val tree = fetchRepositoryTree()
-                val activeManifest = readManifest(File(activeDir, SNAPSHOT_MANIFEST))
-                val currentTreeSha = activeManifest?.optString("treeSha").orEmpty()
-                if (!force && hadSnapshot && currentTreeSha == tree.first) {
+                val remote = fetchManifest()
+                val current = readJson(File(activeDir, LOCAL_STATE))
+                val currentVersion = current?.optString("version").orEmpty()
+                if (!force && hasUsableSnapshot() && currentVersion == remote.version) {
+                    readySent.set(true)
+                    onReady()
                     onComplete(SyncResult(true, false, true))
                     return@execute
                 }
 
-                val files = tree.second
-                if (files.none { it.path == INDEX_PATH }) {
-                    error("GitHub tree does not contain $INDEX_PATH")
-                }
+                prepareStaging(remote)
+                val previousFiles = current?.optJSONArray("files")?.toPathMap().orEmpty()
+                val ordered = buildFairDownloadOrder(remote.files)
+                val criticalRemaining = AtomicInteger(ordered.count { it.priority <= CRITICAL_PRIORITY })
+                if (criticalRemaining.get() == 0 && readySent.compareAndSet(false, true)) onReady()
 
-                prepareStaging()
-                val previousFiles = activeManifest?.optJSONObject("files")
+                val queue = ConcurrentLinkedQueue(ordered)
                 val completed = AtomicInteger(0)
-                val total = files.size
                 val failure = ConcurrentLinkedQueue<String>()
-                val queue = ConcurrentLinkedQueue(files.sortedWith(compareBy<RemoteFile> { it.priority }.thenBy { it.path }))
                 val latch = CountDownLatch(DOWNLOAD_WORKERS)
                 val workers = Executors.newFixedThreadPool(DOWNLOAD_WORKERS) { runnable ->
                     Thread(runnable, "PrismDownload").apply { isDaemon = true }
                 }
 
+                onProgress(Progress(0, ordered.size))
                 repeat(DOWNLOAD_WORKERS) {
                     workers.execute {
                         try {
                             while (failure.isEmpty()) {
-                                val remote = queue.poll() ?: break
-                                val target = safeFile(stagingDir, remote.path)
-                                val previousSha = previousFiles?.optJSONObject(remote.path)?.optString("sha")
-                                val activeFile = safeFile(activeDir, remote.path)
+                                val item = queue.poll() ?: break
+                                val target = safeFile(stagingDir, item.path)
+                                val active = safeFile(activeDir, item.path)
+                                val previous = previousFiles[item.path]
 
-                                val ok = if (previousSha == remote.sha && activeFile.isFile && activeFile.length() > 0L) {
-                                    copyVerified(activeFile, target, remote.size)
-                                } else {
-                                    downloadVerified(remote, target)
+                                val ok = when {
+                                    isVerified(target, item) -> true
+                                    previous != null &&
+                                        previous.optString("sha256") == item.sha256 &&
+                                        previous.optLong("size", -1L) == item.size &&
+                                        isVerified(active, item) -> copyVerified(active, target, item)
+                                    else -> downloadWithRetry(item, target)
                                 }
 
                                 if (!ok) {
-                                    failure.add(remote.path)
+                                    failure.add(item.path)
                                     break
                                 }
-                                val done = completed.incrementAndGet()
-                                onProgress(Progress(done, total, hadSnapshot))
+
+                                verifiedStagingPaths.add(item.path)
+                                if (item.priority <= CRITICAL_PRIORITY &&
+                                    criticalRemaining.decrementAndGet() == 0 &&
+                                    readySent.compareAndSet(false, true)
+                                ) {
+                                    onReady()
+                                }
+                                onProgress(Progress(completed.incrementAndGet(), ordered.size))
                             }
                         } finally {
                             latch.countDown()
@@ -139,24 +157,20 @@ class PrismSnapshotManager(private val context: Context) {
 
                 latch.await()
                 workers.shutdownNow()
-                if (failure.isNotEmpty()) {
-                    stagingDir.deleteRecursively()
-                    error("Snapshot download failed: ${failure.peek()}")
-                }
+                if (failure.isNotEmpty()) error("Could not download ${failure.peek()}")
 
-                writeManifest(tree.first, files)
-                validateStaging(files)
+                writeState(remote)
+                validateStaging(remote)
                 activateStaging()
-                onProgress(Progress(total, total, true))
+                if (readySent.compareAndSet(false, true)) onReady()
                 onComplete(SyncResult(true, true, true))
-            } catch (t: Throwable) {
-                stagingDir.deleteRecursively()
+            } catch (error: Throwable) {
                 onComplete(
                     SyncResult(
                         success = false,
                         updated = false,
                         hasUsableSnapshot = hasUsableSnapshot(),
-                        error = t.message ?: t.javaClass.simpleName
+                        error = error.message ?: error.javaClass.simpleName
                     )
                 )
             } finally {
@@ -165,77 +179,118 @@ class PrismSnapshotManager(private val context: Context) {
         }
     }
 
-    fun responseFor(url: String): WebResourceResponse? {
-        val path = pagesPath(url) ?: return null
-        val file = safeFile(activeDir, path)
-        if (!file.isFile || file.length() <= 0L) return null
-        return runCatching {
-            val mime = mimeFor(path)
-            val encoding = if (isTextMime(mime)) "UTF-8" else null
-            WebResourceResponse(mime, encoding, FileInputStream(file)).apply {
-                responseHeaders = mapOf(
-                    "Access-Control-Allow-Origin" to "*",
-                    "Cache-Control" to "public, max-age=31536000, immutable"
-                )
-            }
-        }.getOrNull()
+    /** Serves active files first, then individually verified first-sync files. */
+    fun responseFor(url: String, rangeHeader: String? = null): WebResourceResponse? {
+        val requestedPath = pagesPath(url) ?: return null
+        val state = readJson(File(activeDir, LOCAL_STATE))
+        val resolvedPath = resolveAlias(requestedPath, state?.optJSONObject("aliases"))
+
+        val active = safeFile(activeDir, resolvedPath)
+        if (active.isFile && active.length() > 0L) return responseForFile(active, resolvedPath, rangeHeader)
+
+        if (verifiedStagingPaths.contains(resolvedPath)) {
+            val staged = safeFile(stagingDir, resolvedPath)
+            if (staged.isFile && staged.length() > 0L) return responseForFile(staged, resolvedPath, rangeHeader)
+        }
+        return null
     }
 
     fun close() {
-        ioPool.shutdownNow()
+        coordinator.shutdownNow()
     }
 
-    private fun fetchRepositoryTree(): Pair<String, List<RemoteFile>> {
-        val connection = openConnection(API_TREE_URL)
-        val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        val json = JSONObject(body)
-        if (json.optBoolean("truncated", false)) error("GitHub tree response was truncated")
-        val treeSha = json.optString("sha")
-        if (treeSha.isBlank()) error("GitHub tree SHA missing")
+    private fun fetchManifest(): RemoteSnapshot {
+        var lastError: Throwable? = null
+        var body: String? = null
+        for (base in MANIFEST_URLS) {
+            try {
+                body = openConnection("$base?t=${System.currentTimeMillis()}")
+                    .inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                break
+            } catch (error: Throwable) {
+                lastError = error
+            }
+        }
+        val raw = body ?: throw (lastError ?: IllegalStateException("Snapshot manifest unavailable"))
+        val root = JSONObject(raw)
+        if (root.optInt("schema", 0) != 1) error("Unsupported snapshot schema")
+        val version = root.optString("version")
+        val entryPoint = root.optString("entryPoint", INDEX_PATH)
+        if (!SHA256_REGEX.matches(version) || entryPoint.isBlank()) error("Invalid snapshot metadata")
+
+        val aliases = mutableMapOf<String, String>()
+        root.optJSONObject("aliases")?.let { json ->
+            json.keys().forEach { from ->
+                val to = json.optString(from)
+                validatePath(from)
+                validatePath(to)
+                aliases[from] = to
+            }
+        }
 
         val files = mutableListOf<RemoteFile>()
-        val array: JSONArray = json.getJSONArray("tree")
+        val seen = HashSet<String>()
+        val array = root.optJSONArray("files") ?: error("Snapshot files missing")
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
-            if (item.optString("type") != "blob") continue
             val path = item.optString("path")
+            val sourceUrl = item.optString("url")
             val size = item.optLong("size", -1L)
-            val sha = item.optString("sha")
-            if (!isRuntimeFile(path, size) || sha.isBlank()) continue
-            files += RemoteFile(path, sha, size, priorityFor(path))
+            val hash = item.optString("sha256").lowercase(Locale.US)
+            validatePath(path)
+            validateSourceUrl(sourceUrl)
+            if (!seen.add(path)) error("Duplicate snapshot path: $path")
+            if (size <= 0L || size > MAX_SINGLE_FILE_BYTES) error("Invalid size: $path")
+            if (!SHA256_REGEX.matches(hash)) error("Invalid hash: $path")
+            files += RemoteFile(
+                path = path,
+                url = sourceUrl,
+                size = size,
+                sha256 = hash,
+                priority = item.optInt("priority", 3).coerceIn(0, 9),
+                lane = item.optString("lane", "general")
+            )
         }
-        return treeSha to files
+        if (files.none { it.path == entryPoint } || files.none { it.path == MENU_PATH }) {
+            error("Snapshot is missing Prism core files")
+        }
+        return RemoteSnapshot(version, entryPoint, aliases, files, raw)
     }
 
-    private fun isRuntimeFile(path: String, size: Long): Boolean {
-        if (path.isBlank() || size == 0L || size > MAX_SINGLE_FILE_BYTES) return false
-        val lower = path.lowercase(Locale.US)
-        if (lower.startsWith(".github/") || lower.startsWith("node_modules/") || lower.startsWith("docs/")) return false
-        if (lower.endsWith("generate-menu.js") || lower.endsWith("package-lock.json") || lower.endsWith("package.json")) return false
-        val extension = lower.substringAfterLast('.', "")
-        return extension in RUNTIME_EXTENSIONS
+    /** Interleaves Quran and module audio within each priority instead of serial categories. */
+    private fun buildFairDownloadOrder(files: List<RemoteFile>): List<RemoteFile> {
+        val output = mutableListOf<RemoteFile>()
+        files.groupBy { it.priority }.toSortedMap().forEach { (_, group) ->
+            val general = ArrayDeque(group.filter { it.lane == "general" }.sortedBy { it.path })
+            val quran = ArrayDeque(group.filter { it.lane == "quran-audio" }.sortedBy { quranAudioRank(it.path) })
+            val modules = ArrayDeque(group.filter { it.lane == "module-audio" }.sortedBy { it.path })
+            while (general.isNotEmpty() || quran.isNotEmpty() || modules.isNotEmpty()) {
+                if (general.isNotEmpty()) output += general.removeFirst()
+                if (quran.isNotEmpty()) output += quran.removeFirst()
+                if (modules.isNotEmpty()) output += modules.removeFirst()
+                if (quran.isNotEmpty()) output += quran.removeFirst()
+            }
+        }
+        return output
     }
 
-    private fun priorityFor(path: String): Int {
+    private fun quranAudioRank(path: String): String {
         val lower = path.lowercase(Locale.US)
-        val extension = lower.substringAfterLast('.', "")
         return when {
-            lower == INDEX_PATH || lower.endsWith("/index.html") && !lower.contains("plugins/") -> 0
-            lower.endsWith("menu.json") || lower.endsWith("manifest.json") || lower.endsWith("webmanifest") -> 0
-            extension in setOf("css", "js", "json", "html") -> 1
-            extension in IMAGE_EXTENSIONS && (lower.contains("tile") || lower.contains("icon") || lower.contains("background")) -> 2
-            extension in AUDIO_EXTENSIONS && looksLikeQuran(path) -> 3
-            extension in AUDIO_EXTENSIONS -> 3
-            extension in IMAGE_EXTENSIONS -> 4
-            else -> 5
+            lower == "a5.mp3" -> "000-$lower"
+            lower.startsWith("a") -> "010-$lower"
+            lower.startsWith("listen/") -> "020-$lower"
+            lower.startsWith("learn/") -> "030-$lower"
+            else -> "040-$lower"
         }
     }
 
-    private fun looksLikeQuran(path: String): Boolean {
-        val lower = path.lowercase(Locale.US)
-        val filename = lower.substringAfterLast('/')
-        return lower.contains("quran") || lower.contains("surah") ||
-            Regex("^(a?\\d{1,3}([_-]\\d+)?)\\.(mp3|ogg|wav|m4a|aac)$").matches(filename)
+    private fun downloadWithRetry(remote: RemoteFile, target: File): Boolean {
+        repeat(DOWNLOAD_ATTEMPTS) { attempt ->
+            if (downloadVerified(remote, target)) return true
+            if (attempt + 1 < DOWNLOAD_ATTEMPTS) Thread.sleep(600L * (attempt + 1))
+        }
+        return false
     }
 
     private fun downloadVerified(remote: RemoteFile, target: File): Boolean {
@@ -243,77 +298,85 @@ class PrismSnapshotManager(private val context: Context) {
         val partial = File(target.parentFile, target.name + PART_SUFFIX)
         partial.delete()
         return runCatching {
-            val url = PAGES_ROOT + remote.path.split('/').joinToString("/") { encodePathSegment(it) }
-            val connection = openConnection(url)
+            val digest = MessageDigest.getInstance("SHA-256")
+            val connection = openConnection(remote.url)
             BufferedInputStream(connection.inputStream).use { input ->
                 BufferedOutputStream(FileOutputStream(partial)).use { output ->
-                    input.copyTo(output, COPY_BUFFER)
+                    val buffer = ByteArray(COPY_BUFFER)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        total += count
+                        if (total > remote.size) error("Oversized response")
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                    }
                 }
             }
-            if (partial.length() <= 0L) error("Empty response for ${remote.path}")
-            if (remote.size >= 0L && partial.length() != remote.size) {
-                error("Size mismatch for ${remote.path}: ${partial.length()} != ${remote.size}")
-            }
-            if (!partial.renameTo(target)) {
-                partial.copyTo(target, overwrite = true)
-                partial.delete()
-            }
-            target.isFile && target.length() > 0L
+            if (partial.length() != remote.size) error("Size mismatch")
+            if (digest.digest().toHex() != remote.sha256) error("Hash mismatch")
+            moveReplacing(partial, target)
+            true
         }.getOrElse {
             partial.delete()
             false
         }
     }
 
-    private fun copyVerified(source: File, target: File, expectedSize: Long): Boolean = runCatching {
+    private fun copyVerified(source: File, target: File, remote: RemoteFile): Boolean = runCatching {
         target.parentFile?.mkdirs()
         source.copyTo(target, overwrite = true)
-        target.length() > 0L && (expectedSize < 0L || target.length() == expectedSize)
+        isVerified(target, remote)
     }.getOrDefault(false)
 
-    private fun openConnection(url: String): HttpURLConnection {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = CONNECT_TIMEOUT_MS
-        connection.readTimeout = READ_TIMEOUT_MS
-        connection.instanceFollowRedirects = true
-        connection.useCaches = false
-        connection.setRequestProperty("Accept-Encoding", "identity")
-        connection.setRequestProperty("User-Agent", "NoorPrismAndroid/${BuildConfig.VERSION_NAME}")
-        connection.connect()
-        if (connection.responseCode !in 200..299) {
-            error("HTTP ${connection.responseCode} for $url")
-        }
-        return connection
+    private fun isVerified(file: File, remote: RemoteFile): Boolean {
+        if (!file.isFile || file.length() != remote.size) return false
+        return runCatching { sha256(file) == remote.sha256 }.getOrDefault(false)
     }
 
-    private fun writeManifest(treeSha: String, files: List<RemoteFile>) {
-        val root = JSONObject()
-        root.put("treeSha", treeSha)
-        root.put("createdAt", System.currentTimeMillis())
-        val fileMap = JSONObject()
-        files.forEach { remote ->
-            fileMap.put(remote.path, JSONObject().apply {
-                put("sha", remote.sha)
-                put("size", remote.size)
-            })
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(COPY_BUFFER)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) digest.update(buffer, 0, count)
+            }
         }
-        root.put("files", fileMap)
-        File(stagingDir, SNAPSHOT_MANIFEST).writeText(root.toString(), StandardCharsets.UTF_8)
+        return digest.digest().toHex()
     }
 
-    private fun readManifest(file: File): JSONObject? = runCatching {
-        if (!file.isFile) return null
-        JSONObject(file.readText(StandardCharsets.UTF_8))
-    }.getOrNull()
-
-    private fun validateStaging(files: List<RemoteFile>) {
-        if (!File(stagingDir, INDEX_PATH).isFile) error("Staged index is missing")
-        if (!File(stagingDir, SNAPSHOT_MANIFEST).isFile) error("Staged manifest is missing")
-        files.forEach { remote ->
-            val file = safeFile(stagingDir, remote.path)
-            if (!file.isFile || file.length() <= 0L) error("Missing staged file: ${remote.path}")
-            if (remote.size >= 0L && file.length() != remote.size) error("Invalid staged size: ${remote.path}")
+    private fun prepareStaging(remote: RemoteSnapshot) {
+        verifiedStagingPaths.clear()
+        val stagedManifest = readJson(File(stagingDir, STAGING_STATE))
+        if (stagedManifest?.optString("version") != remote.version) {
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+        } else {
+            stagingDir.mkdirs()
         }
+        File(stagingDir, STAGING_STATE).writeText(
+            JSONObject().put("version", remote.version).toString(),
+            StandardCharsets.UTF_8
+        )
+    }
+
+    private fun writeState(remote: RemoteSnapshot) {
+        val parsed = JSONObject(remote.rawJson)
+        parsed.put("activatedAt", System.currentTimeMillis())
+        File(stagingDir, LOCAL_STATE).writeText(parsed.toString(), StandardCharsets.UTF_8)
+        File(stagingDir, STAGING_STATE).delete()
+    }
+
+    private fun validateStaging(remote: RemoteSnapshot) {
+        if (!safeFile(stagingDir, remote.entryPoint).isFile) error("Staged entry point missing")
+        remote.files.forEach { item ->
+            if (!isVerified(safeFile(stagingDir, item.path), item)) error("Invalid staged file: ${item.path}")
+        }
+        if (!File(stagingDir, LOCAL_STATE).isFile) error("Staged metadata missing")
     }
 
     @Synchronized
@@ -333,29 +396,139 @@ class PrismSnapshotManager(private val context: Context) {
             error("Snapshot activation failed")
         }
         backupDir.deleteRecursively()
-    }
-
-    private fun prepareStaging() {
-        stagingDir.deleteRecursively()
-        stagingDir.mkdirs()
+        verifiedStagingPaths.clear()
     }
 
     private fun recoverInterruptedSwap() {
         if (!activeDir.exists() && backupDir.exists()) backupDir.renameTo(activeDir)
-        stagingDir.deleteRecursively()
         if (activeDir.exists()) backupDir.deleteRecursively()
+        stagingDir.mkdirs() // retained for resumable verified downloads
     }
+
+    private fun responseForFile(file: File, path: String, rangeHeader: String?): WebResourceResponse? = runCatching {
+        val mime = mimeFor(path)
+        val encoding = if (isTextMime(mime)) "UTF-8" else null
+
+        if (path == MENU_PATH) {
+            val text = file.readText(StandardCharsets.UTF_8)
+                .replace(LEGACY_FILE_BASE, PAGES_ROOT)
+                .replace("${PAGES_ROOT}quran/index.html", "${PAGES_ROOT}index.html")
+            val bytes = text.toByteArray(StandardCharsets.UTF_8)
+            return@runCatching WebResourceResponse(
+                mime, encoding, 200, "OK",
+                mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store",
+                    "Content-Length" to bytes.size.toString()
+                ),
+                ByteArrayInputStream(bytes)
+            )
+        }
+
+        val length = file.length()
+        val range = parseRange(rangeHeader, length)
+        if (range != null) {
+            val (start, end) = range
+            val stream = FileInputStream(file)
+            skipFully(stream, start)
+            val count = end - start + 1L
+            WebResourceResponse(
+                mime, encoding, 206, "Partial Content",
+                mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store",
+                    "Accept-Ranges" to "bytes",
+                    "Content-Range" to "bytes $start-$end/$length",
+                    "Content-Length" to count.toString()
+                ),
+                LimitedInputStream(stream, count)
+            )
+        } else {
+            WebResourceResponse(
+                mime, encoding, 200, "OK",
+                mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store",
+                    "Accept-Ranges" to "bytes",
+                    "Content-Length" to length.toString()
+                ),
+                FileInputStream(file)
+            )
+        }
+    }.getOrNull()
+
+    private fun parseRange(header: String?, length: Long): Pair<Long, Long>? {
+        if (header.isNullOrBlank() || !header.startsWith("bytes=")) return null
+        val value = header.removePrefix("bytes=").substringBefore(',').trim()
+        val parts = value.split('-', limit = 2)
+        if (parts.size != 2) return null
+        val start = parts[0].toLongOrNull() ?: return null
+        val requestedEnd = parts[1].toLongOrNull() ?: (length - 1L)
+        if (start < 0L || start >= length) return null
+        val end = requestedEnd.coerceIn(start, length - 1L)
+        return start to end
+    }
+
+    private fun skipFully(stream: InputStream, bytes: Long) {
+        var remaining = bytes
+        while (remaining > 0L) {
+            val skipped = stream.skip(remaining)
+            if (skipped > 0L) {
+                remaining -= skipped
+            } else if (stream.read() >= 0) {
+                remaining--
+            } else {
+                error("Unexpected end of file")
+            }
+        }
+    }
+
+    private class LimitedInputStream(
+        private val source: InputStream,
+        private var remaining: Long
+    ) : InputStream() {
+        override fun read(): Int {
+            if (remaining <= 0L) return -1
+            val value = source.read()
+            if (value >= 0) remaining--
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (remaining <= 0L) return -1
+            val allowed = minOf(length.toLong(), remaining).toInt()
+            val count = source.read(buffer, offset, allowed)
+            if (count > 0) remaining -= count.toLong()
+            return count
+        }
+
+        override fun close() = source.close()
+    }
+
+    private fun resolveAlias(path: String, aliases: JSONObject?): String =
+        aliases?.optString(path).orEmpty().ifBlank { path }
 
     private fun pagesPath(url: String): String? = runCatching {
         val uri = URI(url)
         if (!uri.scheme.equals("https", true) || !uri.host.equals(PAGES_HOST, true)) return null
         val prefix = "/$REPOSITORY_NAME/"
-        val rawPath = uri.path ?: return null
-        if (!rawPath.startsWith(prefix)) return null
-        val relative = rawPath.removePrefix(prefix).ifBlank { INDEX_PATH }
-        if (relative.contains("..")) return null
-        relative
+        val raw = uri.path ?: return null
+        if (!raw.startsWith(prefix)) return null
+        raw.removePrefix(prefix).ifBlank { INDEX_PATH }.also(::validatePath)
     }.getOrNull()
+
+    private fun validatePath(path: String) {
+        require(path.isNotBlank() && !path.startsWith("/") && !path.contains("..") && !path.contains('\\')) {
+            "Unsafe snapshot path"
+        }
+    }
+
+    private fun validateSourceUrl(value: String) {
+        val uri = URI(value)
+        val validRaw = uri.host.equals(RAW_HOST, true) && uri.path.startsWith("/$RAW_OWNER/$REPOSITORY_NAME/")
+        val validPages = uri.host.equals(PAGES_HOST, true) && uri.path.startsWith("/$REPOSITORY_NAME/")
+        require(uri.scheme.equals("https", true) && (validRaw || validPages)) { "Unsupported snapshot source" }
+    }
 
     private fun safeFile(root: File, relativePath: String): File {
         val candidate = File(root, relativePath).canonicalFile
@@ -363,6 +536,44 @@ class PrismSnapshotManager(private val context: Context) {
         require(candidate.path.startsWith(rootPath)) { "Unsafe cache path" }
         return candidate
     }
+
+    private fun openConnection(url: String): HttpURLConnection {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        connection.instanceFollowRedirects = true
+        connection.useCaches = false
+        connection.setRequestProperty("Accept-Encoding", "identity")
+        connection.setRequestProperty("Cache-Control", "no-cache")
+        connection.setRequestProperty("User-Agent", "NoorPrismAndroid/${BuildConfig.VERSION_NAME}")
+        connection.connect()
+        if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
+        return connection
+    }
+
+    private fun readJson(file: File): JSONObject? = runCatching {
+        if (!file.isFile) return null
+        JSONObject(file.readText(StandardCharsets.UTF_8))
+    }.getOrNull()
+
+    private fun JSONArray.toPathMap(): Map<String, JSONObject> {
+        val map = HashMap<String, JSONObject>(length())
+        for (index in 0 until length()) {
+            val item = getJSONObject(index)
+            map[item.optString("path")] = item
+        }
+        return map
+    }
+
+    private fun moveReplacing(source: File, target: File) {
+        if (target.exists()) target.delete()
+        if (!source.renameTo(target)) {
+            source.copyTo(target, overwrite = true)
+            source.delete()
+        }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private fun mimeFor(path: String): String {
         val extension = path.substringAfterLast('.', "").lowercase(Locale.US)
@@ -385,34 +596,33 @@ class PrismSnapshotManager(private val context: Context) {
     private fun isTextMime(mime: String): Boolean =
         mime.startsWith("text/") || mime.contains("javascript") || mime.contains("json") || mime.contains("svg")
 
-    private fun encodePathSegment(value: String): String =
-        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
-
     companion object {
         private const val REPOSITORY_NAME = "Quran"
+        private const val RAW_OWNER = "AmtunNoor"
         private const val PAGES_HOST = "amtunnoor.github.io"
+        private const val RAW_HOST = "raw.githubusercontent.com"
         private const val PAGES_ROOT = "https://$PAGES_HOST/$REPOSITORY_NAME/"
-        private const val API_TREE_URL = "https://api.github.com/repos/AmtunNoor/Quran/git/trees/main?recursive=1"
-        private const val CACHE_ROOT = "prism_snapshot"
+        private val MANIFEST_URLS = listOf(
+            "https://$RAW_HOST/$RAW_OWNER/$REPOSITORY_NAME/main/snapshot.json",
+            "${PAGES_ROOT}snapshot.json"
+        )
+        private const val LEGACY_FILE_BASE = "file:///data/user/0/com.noor.prism/files/"
+        private const val CACHE_ROOT = "prism_snapshot_v3"
         private const val ACTIVE_DIR = "active"
         private const val STAGING_DIR = "staging"
         private const val BACKUP_DIR = "backup"
-        private const val SNAPSHOT_MANIFEST = ".snapshot.json"
+        private const val LOCAL_STATE = ".snapshot-state.json"
+        private const val STAGING_STATE = ".staging-state.json"
         private const val INDEX_PATH = "index.html"
+        private const val MENU_PATH = "menu.json"
         private const val PART_SUFFIX = ".part"
         private const val DOWNLOAD_WORKERS = 8
+        private const val DOWNLOAD_ATTEMPTS = 3
+        private const val CRITICAL_PRIORITY = 1
         private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val READ_TIMEOUT_MS = 60_000
+        private const val READ_TIMEOUT_MS = 90_000
         private const val COPY_BUFFER = 64 * 1024
         private const val MAX_SINGLE_FILE_BYTES = 150L * 1024L * 1024L
-
-        private val AUDIO_EXTENSIONS = setOf("mp3", "ogg", "wav", "m4a", "aac")
-        private val IMAGE_EXTENSIONS = setOf("webp", "png", "jpg", "jpeg", "gif", "svg", "avif")
-        private val RUNTIME_EXTENSIONS = setOf(
-            "html", "htm", "css", "js", "json", "webmanifest", "txt",
-            "webp", "png", "jpg", "jpeg", "gif", "svg", "avif",
-            "mp3", "ogg", "wav", "m4a", "aac",
-            "woff", "woff2", "ttf", "otf"
-        )
+        private val SHA256_REGEX = Regex("^[0-9a-f]{64}$")
     }
 }

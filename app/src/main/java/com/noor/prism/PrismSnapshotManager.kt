@@ -90,13 +90,11 @@ class PrismSnapshotManager(private val context: Context) {
         }
 
         coordinator.execute {
-            val readySent = AtomicBoolean(false)
             try {
                 val remote = fetchManifest()
                 val current = readJson(File(activeDir, LOCAL_STATE))
                 val currentVersion = current?.optString("version").orEmpty()
                 if (!force && hasUsableSnapshot() && currentVersion == remote.version) {
-                    readySent.set(true)
                     onReady()
                     onComplete(SyncResult(true, false, true))
                     return@execute
@@ -104,65 +102,45 @@ class PrismSnapshotManager(private val context: Context) {
 
                 prepareStaging(remote)
                 val previousFiles = current?.optJSONArray("files")?.toPathMap().orEmpty()
-                val ordered = buildFairDownloadOrder(remote.files)
-                val criticalRemaining = AtomicInteger(ordered.count { it.priority <= CRITICAL_PRIORITY })
-                if (criticalRemaining.get() == 0 && readySent.compareAndSet(false, true)) onReady()
-
-                val queue = ConcurrentLinkedQueue(ordered)
                 val completed = AtomicInteger(0)
-                val failure = ConcurrentLinkedQueue<String>()
-                val latch = CountDownLatch(DOWNLOAD_WORKERS)
-                val workers = Executors.newFixedThreadPool(DOWNLOAD_WORKERS) { runnable ->
-                    Thread(runnable, "PrismDownload").apply { isDaemon = true }
-                }
+                val total = remote.files.size
+                onProgress(Progress(0, total))
 
-                onProgress(Progress(0, ordered.size))
-                repeat(DOWNLOAD_WORKERS) {
-                    workers.execute {
-                        try {
-                            while (failure.isEmpty()) {
-                                val item = queue.poll() ?: break
-                                val target = safeFile(stagingDir, item.path)
-                                val active = safeFile(activeDir, item.path)
-                                val previous = previousFiles[item.path]
+                // Phase 1: core HTML/JS/CSS/plugin metadata and every landing/module image.
+                // Prism is not opened until this phase is complete, so valid tile images
+                // never lose a race to a gradient fallback.
+                val critical = remote.files
+                    .filter { it.priority <= CRITICAL_PRIORITY }
+                    .sortedWith(compareBy<RemoteFile> { it.priority }.thenBy { it.path })
+                val criticalFailure = downloadGroup(
+                    files = critical,
+                    workerCount = CRITICAL_WORKERS,
+                    previousFiles = previousFiles,
+                    completed = completed,
+                    total = total,
+                    onProgress = onProgress
+                )
+                if (criticalFailure != null) error("Could not download $criticalFailure")
 
-                                val ok = when {
-                                    isVerified(target, item) -> true
-                                    previous != null &&
-                                        previous.optString("sha256") == item.sha256 &&
-                                        previous.optLong("size", -1L) == item.size &&
-                                        isVerified(active, item) -> copyVerified(active, target, item)
-                                    else -> downloadWithRetry(item, target)
-                                }
+                // The verified staged shell is now safe to serve while audio continues.
+                onReady()
 
-                                if (!ok) {
-                                    failure.add(item.path)
-                                    break
-                                }
-
-                                verifiedStagingPaths.add(item.path)
-                                if (item.priority <= CRITICAL_PRIORITY &&
-                                    criticalRemaining.decrementAndGet() == 0 &&
-                                    readySent.compareAndSet(false, true)
-                                ) {
-                                    onReady()
-                                }
-                                onProgress(Progress(completed.incrementAndGet(), ordered.size))
-                            }
-                        } finally {
-                            latch.countDown()
-                        }
-                    }
-                }
-
-                latch.await()
-                workers.shutdownNow()
-                if (failure.isNotEmpty()) error("Could not download ${failure.peek()}")
+                // Phase 2: Quran and module audio are deliberately interleaved and use
+                // only three connections, preventing background sync from starving WebView.
+                val remaining = buildFairDownloadOrder(remote.files.filter { it.priority > CRITICAL_PRIORITY })
+                val remainingFailure = downloadGroup(
+                    files = remaining,
+                    workerCount = BACKGROUND_WORKERS,
+                    previousFiles = previousFiles,
+                    completed = completed,
+                    total = total,
+                    onProgress = onProgress
+                )
+                if (remainingFailure != null) error("Could not download $remainingFailure")
 
                 writeState(remote)
                 validateStaging(remote)
                 activateStaging()
-                if (readySent.compareAndSet(false, true)) onReady()
                 onComplete(SyncResult(true, true, true))
             } catch (error: Throwable) {
                 onComplete(
@@ -177,6 +155,56 @@ class PrismSnapshotManager(private val context: Context) {
                 syncRunning.set(false)
             }
         }
+    }
+
+    private fun downloadGroup(
+        files: List<RemoteFile>,
+        workerCount: Int,
+        previousFiles: Map<String, JSONObject>,
+        completed: AtomicInteger,
+        total: Int,
+        onProgress: (Progress) -> Unit
+    ): String? {
+        if (files.isEmpty()) return null
+        val queue = ConcurrentLinkedQueue(files)
+        val failure = ConcurrentLinkedQueue<String>()
+        val actualWorkers = minOf(workerCount, files.size).coerceAtLeast(1)
+        val latch = CountDownLatch(actualWorkers)
+        val workers = Executors.newFixedThreadPool(actualWorkers) { runnable ->
+            Thread(runnable, "PrismDownload").apply { isDaemon = true }
+        }
+
+        repeat(actualWorkers) {
+            workers.execute {
+                try {
+                    while (failure.isEmpty()) {
+                        val item = queue.poll() ?: break
+                        val target = safeFile(stagingDir, item.path)
+                        val active = safeFile(activeDir, item.path)
+                        val previous = previousFiles[item.path]
+                        val ok = when {
+                            isVerified(target, item) -> true
+                            previous != null &&
+                                previous.optString("sha256") == item.sha256 &&
+                                previous.optLong("size", -1L) == item.size &&
+                                isVerified(active, item) -> copyVerified(active, target, item)
+                            else -> downloadWithRetry(item, target)
+                        }
+                        if (!ok) {
+                            failure.add(item.path)
+                            break
+                        }
+                        verifiedStagingPaths.add(item.path)
+                        onProgress(Progress(completed.incrementAndGet(), total))
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+        latch.await()
+        workers.shutdownNow()
+        return failure.peek()
     }
 
     /** Serves active files first, then individually verified first-sync files. */
@@ -261,9 +289,9 @@ class PrismSnapshotManager(private val context: Context) {
     private fun buildFairDownloadOrder(files: List<RemoteFile>): List<RemoteFile> {
         val output = mutableListOf<RemoteFile>()
         files.groupBy { it.priority }.toSortedMap().forEach { (_, group) ->
-            val general = ArrayDeque(group.filter { it.lane == "general" }.sortedBy { it.path })
-            val quran = ArrayDeque(group.filter { it.lane == "quran-audio" }.sortedBy { quranAudioRank(it.path) })
-            val modules = ArrayDeque(group.filter { it.lane == "module-audio" }.sortedBy { it.path })
+            val general = ArrayDeque(group.filter { effectiveLane(it) == "general" }.sortedBy { it.path })
+            val quran = ArrayDeque(group.filter { effectiveLane(it) == "quran-audio" }.sortedBy { quranAudioRank(it.path) })
+            val modules = ArrayDeque(group.filter { effectiveLane(it) == "module-audio" }.sortedBy { moduleAudioRank(it.path) })
             while (general.isNotEmpty() || quran.isNotEmpty() || modules.isNotEmpty()) {
                 if (general.isNotEmpty()) output += general.removeFirst()
                 if (quran.isNotEmpty()) output += quran.removeFirst()
@@ -272,6 +300,31 @@ class PrismSnapshotManager(private val context: Context) {
             }
         }
         return output
+    }
+
+    private fun effectiveLane(file: RemoteFile): String {
+        val lower = file.path.lowercase(Locale.US)
+        if (lower.endsWith(".mp3") || lower.endsWith(".m4a") || lower.endsWith(".aac") || lower.endsWith(".ogg") || lower.endsWith(".wav")) {
+            return if (lower.matches(Regex("^a\\d+\\.mp3$")) || lower.startsWith("listen/") || lower.startsWith("learn/")) {
+                "quran-audio"
+            } else {
+                "module-audio"
+            }
+        }
+        return file.lane
+    }
+
+    private fun moduleAudioRank(path: String): String {
+        val lower = path.lowercase(Locale.US)
+        return when {
+            lower.startsWith("names/1_27") -> "000-$lower"
+            lower.startsWith("months/") -> "010-$lower"
+            lower.startsWith("salahnames/") -> "020-$lower"
+            lower.startsWith("plugins/angels/") -> "030-$lower"
+            lower.startsWith("numbers/") -> "040-$lower"
+            lower.startsWith("plugins/pillars/") -> "050-$lower"
+            else -> "100-$lower"
+        }
     }
 
     private fun quranAudioRank(path: String): String {
@@ -616,7 +669,8 @@ class PrismSnapshotManager(private val context: Context) {
         private const val INDEX_PATH = "index.html"
         private const val MENU_PATH = "menu.json"
         private const val PART_SUFFIX = ".part"
-        private const val DOWNLOAD_WORKERS = 8
+        private const val CRITICAL_WORKERS = 4
+        private const val BACKGROUND_WORKERS = 3
         private const val DOWNLOAD_ATTEMPTS = 3
         private const val CRITICAL_PRIORITY = 1
         private const val CONNECT_TIMEOUT_MS = 15_000

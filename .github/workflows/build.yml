@@ -22,8 +22,9 @@ jobs:
           test ! -d app/src/main/assets
           test -f app/src/main/java/com/noor/prism/MainActivity.kt
           test -f app/src/main/java/com/noor/prism/PlaybackKeepAliveService.kt
+          test -f app/src/main/java/com/noor/prism/PrismSnapshotManager.kt
+          test -f app/src/main/java/com/noor/prism/PrismLoadingView.kt
           ! grep -R "requestedOrientation" app/src/main/java
-          ! grep -R "shouldInterceptRequest" app/src/main/java
           ! grep -R "__prismEnsureTopbar\|__prismHealTopbar" app/src/main/java
 
       - name: Set up Java 17
@@ -50,7 +51,7 @@ jobs:
       - name: Upload validated APK and lint report
         uses: actions/upload-artifact@v4
         with:
-          name: NoorPrism-Runtime-v2.4.0-APK
+          name: NoorPrism-Runtime-v3.0.0-RC1-APK
           if-no-files-found: error
           path: |
             app/build/outputs/apk/release/app-release.apk

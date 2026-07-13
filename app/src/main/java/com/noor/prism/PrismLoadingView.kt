@@ -38,7 +38,7 @@ class PrismLoadingView(context: Context) : View(context) {
         strokeWidth = 2.2f * density
     }
     private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private val logoBitmap = BitmapFactory.decodeResource(resources, R.drawable.app_icon)
+    private val logoBitmap = BitmapFactory.decodeResource(resources, R.drawable.prism_loading_logo)
     private val particlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE

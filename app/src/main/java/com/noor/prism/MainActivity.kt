@@ -15,10 +15,10 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
 import android.webkit.JavascriptInterface
-import android.webkit.ServiceWorkerController
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingOverlay: View
     private lateinit var errorOverlay: View
     private lateinit var errorMessage: TextView
+    private lateinit var snapshotManager: PrismSnapshotManager
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopAudioService = Runnable {
@@ -46,61 +47,92 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var audioPlaying = false
     private var firstContentShown = false
     private var mainFrameFailed = false
+    private var syncStarted = false
+
+    private val deviceKind: String
+        get() = if (isTelevision()) "tv" else "phone"
 
     private val basePrismUrl: String
-        get() {
-            val device = if (isTelevision()) "tv" else "phone"
-            return "https://amtunnoor.github.io/Quran/index.html?runtime=android&device=$device"
-        }
+        get() = snapshotManager.activeIndexUrl(deviceKind)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        snapshotManager = PrismSnapshotManager(applicationContext)
         enableImmersiveMode()
         buildUi()
         configureWebView()
         configureBackNavigation()
 
-        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-            loadPrism(forceNetworkValidation = true)
-        } else {
-            showLoading(false)
+        if (savedInstanceState != null && webView.restoreState(savedInstanceState) != null) {
             firstContentShown = true
+            showLoading(false)
+            startBackgroundSync()
+        } else {
+            startRuntime()
         }
     }
 
-    private fun buildUi() {
-        root = FrameLayout(this).apply {
-            setBackgroundColor(PRISM_BACKGROUND)
+    private fun startRuntime() {
+        if (snapshotManager.hasUsableSnapshot()) {
+            loadPrismSnapshot(showLoader = true)
+            startBackgroundSync()
+            return
         }
+        if (!isOnline()) {
+            showLoading(false)
+            showError(true)
+            return
+        }
+        showLoading(true)
+        syncStarted = true
+        snapshotManager.startSync(
+            onProgress = { /* Deliberately one calm loading message only. */ },
+            onComplete = { result ->
+                runOnUiThread {
+                    syncStarted = false
+                    if (result.hasUsableSnapshot) {
+                        loadPrismSnapshot(showLoader = true)
+                    } else {
+                        showLoading(false)
+                        showError(true)
+                    }
+                }
+            }
+        )
+    }
+
+    private fun startBackgroundSync() {
+        if (syncStarted || !isOnline()) return
+        syncStarted = true
+        snapshotManager.startSync(
+            onProgress = { },
+            onComplete = {
+                runOnUiThread { syncStarted = false }
+            }
+        )
+    }
+
+    private fun buildUi() {
+        root = FrameLayout(this).apply { setBackgroundColor(PRISM_BACKGROUND) }
 
         webView = WebView(this).apply {
             setBackgroundColor(PRISM_BACKGROUND)
             isFocusable = true
             isFocusableInTouchMode = true
             overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.INVISIBLE
         }
 
-        loadingOverlay = createLoadingOverlay()
+        loadingOverlay = PrismLoadingView(this)
         errorOverlay = createErrorOverlay()
 
         root.addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(loadingOverlay, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(errorOverlay, FrameLayout.LayoutParams(MATCH, MATCH))
         setContentView(root)
-    }
-
-    private fun createLoadingOverlay(): View {
-        return TextView(this).apply {
-            setBackgroundColor(PRISM_BACKGROUND)
-            text = "✦\n\nPreparing Noor's Prism…"
-            textSize = 22f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(Color.WHITE)
-            isFocusable = false
-        }
     }
 
     private fun createErrorOverlay(): View {
@@ -116,7 +148,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 18f
             isAllCaps = false
             isFocusable = true
-            setOnClickListener { loadPrism(forceNetworkValidation = true) }
+            setOnClickListener { startRuntime() }
         }
 
         val panel = LinearLayout(this).apply {
@@ -144,7 +176,6 @@ class MainActivity : AppCompatActivity() {
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             loadsImagesAutomatically = true
             blockNetworkImage = false
@@ -155,9 +186,9 @@ class MainActivity : AppCompatActivity() {
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
-            loadWithOverviewMode = true
+            loadWithOverviewMode = false
             useWideViewPort = true
-            cacheMode = WebSettings.LOAD_DEFAULT
+            cacheMode = WebSettings.LOAD_NO_CACHE
             userAgentString = "$userAgentString NoorPrismAndroid/${BuildConfig.VERSION_NAME}"
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
@@ -166,40 +197,29 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) isAlgorithmicDarkeningAllowed = false
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            runCatching {
-                ServiceWorkerController.getInstance().serviceWorkerWebSettings.apply {
-                    allowContentAccess = false
-                    allowFileAccess = false
-                    blockNetworkLoads = false
-                    cacheMode = WebSettings.LOAD_DEFAULT
-                }
-            }
-        }
-
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         webView.webChromeClient = WebChromeClient()
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
-                return if (target.scheme == "https" && target.host.equals(ALLOWED_HOST, ignoreCase = true)) {
-                    false
-                } else {
-                    true
-                }
+                return !(target.scheme == "https" && target.host.equals(ALLOWED_HOST, ignoreCase = true))
+            }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (request.method != "GET") return null
+                return snapshotManager.responseFor(request.url.toString())
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 mainFrameFailed = false
-                if (!firstContentShown) showLoading(true)
                 showError(false)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 if (mainFrameFailed) return
                 installAudioObserver()
-                requestServiceWorkerRefresh()
                 firstContentShown = true
+                webView.visibility = View.VISIBLE
                 showLoading(false)
                 showError(false)
                 view.requestFocus()
@@ -208,29 +228,18 @@ class MainActivity : AppCompatActivity() {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (!request.isForMainFrame) return
                 mainFrameFailed = true
+                webView.visibility = View.INVISIBLE
                 showLoading(false)
                 showError(true)
             }
         }
     }
 
-    private fun loadPrism(forceNetworkValidation: Boolean) {
+    private fun loadPrismSnapshot(showLoader: Boolean) {
         mainFrameFailed = false
         showError(false)
-        showLoading(!firstContentShown)
-
-        webView.settings.cacheMode = if (isOnline()) {
-            WebSettings.LOAD_DEFAULT
-        } else {
-            WebSettings.LOAD_CACHE_ELSE_NETWORK
-        }
-
-        val headers = if (forceNetworkValidation && isOnline()) {
-            mapOf("Cache-Control" to "no-cache")
-        } else {
-            emptyMap()
-        }
-        webView.loadUrl(basePrismUrl, headers)
+        if (showLoader && !firstContentShown) showLoading(true)
+        webView.loadUrl(basePrismUrl)
     }
 
     private fun installAudioObserver() {
@@ -262,34 +271,43 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    private fun requestServiceWorkerRefresh() {
-        if (!isOnline()) return
-        webView.evaluateJavascript(
-            """
-            (function () {
-              if (!('serviceWorker' in navigator)) return;
-              navigator.serviceWorker.getRegistrations().then(function (registrations) {
-                registrations.forEach(function (registration) { registration.update().catch(function () {}); });
-              }).catch(function () {});
-            })();
-            """.trimIndent(),
-            null
-        )
-    }
-
     private fun configureBackNavigation() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                when {
-                    errorOverlay.visibility == View.VISIBLE && webView.canGoBack() -> {
-                        showError(false)
-                        webView.goBack()
-                    }
-                    webView.canGoBack() -> webView.goBack()
-                    else -> moveTaskToBack(true)
+                if (errorOverlay.visibility == View.VISIBLE) {
+                    if (snapshotManager.hasUsableSnapshot()) loadPrismSnapshot(showLoader = false)
+                    else moveTaskToBack(true)
+                    return
                 }
+                attemptWebHomeOrBack()
             }
         })
+    }
+
+    private fun attemptWebHomeOrBack() {
+        val script = """
+            (function () {
+              try {
+                var selectors = [
+                  '[data-action="home"]', '[data-home]', '#homeButton', '.home-button',
+                  'a[href="./index.html"]', 'a[href="index.html"]', 'button[aria-label*="home" i]'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                  var el = document.querySelector(selectors[i]);
+                  if (el && el.offsetParent !== null) { el.click(); return true; }
+                }
+              } catch (_) {}
+              return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { result ->
+            if (result == "true") return@evaluateJavascript
+            when {
+                webView.canGoBack() -> webView.goBack()
+                !webView.url.orEmpty().contains("index.html") -> loadPrismSnapshot(showLoader = false)
+                else -> moveTaskToBack(true)
+            }
+        }
     }
 
     private inner class RuntimeBridge {
@@ -298,11 +316,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 audioPlaying = playing
                 mainHandler.removeCallbacks(stopAudioService)
-                if (playing) {
-                    startPlaybackService()
-                } else {
-                    mainHandler.postDelayed(stopAudioService, AUDIO_STOP_GRACE_MS)
-                }
+                if (playing) startPlaybackService()
+                else mainHandler.postDelayed(stopAudioService, AUDIO_STOP_GRACE_MS)
             }
         }
     }
@@ -325,10 +340,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showError(show: Boolean) {
         if (show) {
-            errorMessage.text = if (isOnline()) {
-                "Noor's Prism could not start.\nPlease try again."
+            errorMessage.text = if (snapshotManager.hasUsableSnapshot()) {
+                "Prism could not open its saved copy.\nPlease try again."
+            } else if (isOnline()) {
+                "Prism could not finish its first download.\nPlease try again."
             } else {
-                "You're offline and Prism has not finished caching yet.\nConnect once, then it will reopen from cache."
+                "Connect to the internet once so Prism can prepare its offline copy."
             }
         }
         errorOverlay.visibility = if (show) View.VISIBLE else View.GONE
@@ -349,12 +366,15 @@ class MainActivity : AppCompatActivity() {
         }.getOrDefault(false)
     }
 
-    private fun isTelevision(): Boolean =
-        packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+    private fun isTelevision(): Boolean {
+        @Suppress("DEPRECATION")
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
+    }
 
     private fun enableImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            @Suppress("DEPRECATION")
             window.setDecorFitsSystemWindows(false)
             window.insetsController?.apply {
                 hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
@@ -363,12 +383,9 @@ class MainActivity : AppCompatActivity() {
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility =
-                View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
         }
     }
 
@@ -397,6 +414,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         if (!audioPlaying) stopPlaybackService()
+        snapshotManager.close()
         runCatching { webView.removeJavascriptInterface(NATIVE_BRIDGE) }
         runCatching {
             webView.stopLoading()
@@ -408,9 +426,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_MENU) {
-            return true
-        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_MENU) return true
         return super.dispatchKeyEvent(event)
     }
 

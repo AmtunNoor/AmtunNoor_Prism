@@ -253,7 +253,7 @@ class PrismLoadingView(context: Context) : View(context) {
     private fun drawLoadingText(canvas: Canvas, w: Float, h: Float) {
         val shimmer = ((sin(phase * 1.45f) + 1f) / 2f)
         textPaint.alpha = (205 + 50 * shimmer).toInt().coerceIn(0, 255)
-        textPaint.shadowLayer = (8f + 5f * shimmer) * density, 0f, 0f, Color.argb(170, 107, 218, 255)
+        textPaint.setShadowLayer((8f + 5f * shimmer) * density, 0f, 0f, Color.argb(170, 107, 218, 255))
         canvas.drawText("Loading Prism…", w / 2f, h * 0.665f, textPaint)
         textPaint.clearShadowLayer()
     }

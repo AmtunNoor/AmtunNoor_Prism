@@ -17,12 +17,9 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
 import android.webkit.JavascriptInterface
-import android.webkit.ServiceWorkerClient
-import android.webkit.ServiceWorkerController
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -43,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var errorMessage: TextView
     private lateinit var homeFallback: TextView
     private lateinit var snapshotManager: PrismSnapshotManager
+    private lateinit var localServer: PrismLocalServer
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stopAudioService = Runnable { if (!audioPlaying) stopPlaybackService() }
@@ -54,7 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var introShownAt = 0L
 
     private val deviceKind: String get() = if (isTelevision()) "tv" else "phone"
-    private val basePrismUrl: String get() = snapshotManager.activeIndexUrl(deviceKind)
+    private val basePrismUrl: String get() = localServer.indexUrl(deviceKind)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +60,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         snapshotManager = PrismSnapshotManager(applicationContext)
+        localServer = PrismLocalServer(snapshotManager).also { it.start() }
         enableImmersiveMode()
         buildUi()
         configureWebView()
@@ -234,36 +233,15 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) isAlgorithmicDarkeningAllowed = false
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            runCatching {
-                val controller = ServiceWorkerController.getInstance()
-                controller.serviceWorkerWebSettings.apply {
-                    allowContentAccess = false
-                    allowFileAccess = false
-                    blockNetworkLoads = false
-                    cacheMode = WebSettings.LOAD_DEFAULT
-                }
-                controller.setServiceWorkerClient(object : ServiceWorkerClient() {
-                    override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
-                        if (request.method != "GET") return null
-                        return snapshotManager.responseFor(request.url.toString(), request.requestHeaders["Range"])
-                    }
-                })
-            }
-        }
-
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         webView.webChromeClient = WebChromeClient()
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
+                val host = target.host?.lowercase()
+                if (target.scheme == "http" && host == LOCAL_HOST) return false
                 if (target.scheme != "https") return true
-                return target.host?.lowercase() !in ALLOWED_HOSTS
-            }
-
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                if (request.method != "GET") return null
-                return snapshotManager.responseFor(request.url.toString(), request.requestHeaders["Range"])
+                return host !in ALLOWED_HOSTS
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -284,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (!request.isForMainFrame) return
                 mainFrameFailed = true
-                if (snapshotManager.hasUsableSnapshot() && request.url.host == PAGES_HOST) {
+                if (snapshotManager.hasUsableSnapshot() && request.url.host?.lowercase() == LOCAL_HOST) {
                     view.postDelayed({ view.reload() }, 350L)
                     return
                 }
@@ -518,6 +496,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         if (!audioPlaying) stopPlaybackService()
+        runCatching { localServer.close() }
         snapshotManager.close()
         runCatching { webView.removeJavascriptInterface(NATIVE_BRIDGE) }
         runCatching {
@@ -538,6 +517,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PAGES_HOST = "amtunnoor.github.io"
+        private const val LOCAL_HOST = "127.0.0.1"
         private val ALLOWED_HOSTS = setOf(PAGES_HOST, "busymommh.github.io")
         private const val NATIVE_BRIDGE = "PrismNative"
         private const val AUDIO_STOP_GRACE_MS = 1800L

@@ -223,6 +223,43 @@ class PrismSnapshotManager(private val context: Context) {
         return null
     }
 
+
+    /** Resolves a local HTTP request to a verified snapshot file. */
+    fun localFileForPath(rawPath: String): Pair<File, String>? {
+        val requested = normalizeRequestPath(rawPath) ?: return null
+        if (requested == "sw.js") return null // Native snapshot storage replaces the web service worker.
+
+        val activeState = readJson(File(activeDir, LOCAL_STATE))
+        val activePath = resolveAlias(requested, activeState?.optJSONObject("aliases"))
+        val active = safeFile(activeDir, activePath)
+        if (active.isFile && active.length() > 0L) return active to activePath
+
+        if (verifiedStagingPaths.contains(activePath)) {
+            val staged = safeFile(stagingDir, activePath)
+            if (staged.isFile && staged.length() > 0L) return staged to activePath
+        }
+        return null
+    }
+
+    /** Rewrites only runtime transport URLs in menu.json; module data remains unchanged. */
+    fun bytesForLocalServer(file: File, path: String, localBaseUrl: String): ByteArray? {
+        if (path != MENU_PATH) return null
+        return file.readText(StandardCharsets.UTF_8)
+            .replace(LEGACY_FILE_BASE, localBaseUrl)
+            .replace(PAGES_ROOT, localBaseUrl)
+            .replace("${localBaseUrl}quran/index.html", "${localBaseUrl}index.html")
+            .toByteArray(StandardCharsets.UTF_8)
+    }
+
+    fun mimeTypeFor(path: String): String = mimeFor(path)
+
+    private fun normalizeRequestPath(rawPath: String): String? {
+        val withoutQuery = rawPath.substringBefore('?').substringBefore('#')
+        val decoded = runCatching { java.net.URLDecoder.decode(withoutQuery, "UTF-8") }.getOrNull() ?: return null
+        val clean = decoded.trimStart('/').ifBlank { INDEX_PATH }
+        return runCatching { validatePath(clean); clean }.getOrNull()
+    }
+
     fun close() {
         coordinator.shutdownNow()
     }

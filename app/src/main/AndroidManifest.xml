@@ -20,7 +20,7 @@
         android:label="Noor's Prism"
         android:supportsRtl="true"
         android:theme="@style/Theme.NoorPrism.Starting"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:hardwareAccelerated="true"
         android:enableOnBackInvokedCallback="true">

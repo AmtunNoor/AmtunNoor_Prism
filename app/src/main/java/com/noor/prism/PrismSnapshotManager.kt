@@ -479,6 +479,23 @@ class PrismSnapshotManager(private val context: Context) {
         }
 
         val length = file.length()
+
+        // WebView's custom partial-content path can report unstable MP3 duration/positions
+        // on some Android builds. For cached audio, serve the complete verified file as a
+        // normal 200 response and let Chromium decode it sequentially. This deliberately
+        // ignores Range for audio only; images/scripts continue through the normal path.
+        if (mime.startsWith("audio/")) {
+            return@runCatching WebResourceResponse(
+                mime, null, 200, "OK",
+                mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store",
+                    "Content-Length" to length.toString()
+                ),
+                FileInputStream(file)
+            )
+        }
+
         when (val decision = parseRange(rangeHeader, length)) {
             RangeDecision.None -> WebResourceResponse(
                 mime, encoding, 200, "OK",
